@@ -31,14 +31,11 @@ CREDENTIALS_FILE = 'credentials.json'
 
 # --- Line-ups sheet ---
 LINEUPS_SHEET_ID = '1T_Sc_t6n5E_tKpnDEjzd4-6th1T-kHexK-bGezxnZ30'
-LINEUPS_TAB = 'Form Responses 1'
-# Columns (0-based) on the line-ups sheet:
-COL_TEAM = 0        # A (header "Timestamp" but holds team e.g. "6A")
-COL_MATCH_DATE = 1  # B  e.g. 8/23/2026
-COL_STARTERS = 2    # C  comma-separated names
-COL_SUBS = 3        # D  comma-separated names
-COL_CAPTAIN = 4     # E  single name
-COL_STATUS = 5      # F  "sent" status (blank = not sent)
+# Tabs are named after the team (6A/6B/6C/6D/VETs).
+# Columns (0-based): A Timestamp | B Match Date | C Starters | D Subs | E Captain | F Status
+COL_MATCH_DATE = 1; COL_STARTERS = 2; COL_SUBS = 3; COL_CAPTAIN = 4; COL_STATUS = 5
+COL_PICTURE = 6
+OUR_TEAMS = ('6A', '6B', '6C', '6D', 'VETS')
 
 # --- Fixtures/Index sheet (team -> league) ---
 INDEX_SHEET_ID = '1j6ZN3N8aXnB9vKFdWeXhY-fyo8aH1JlmhWZWHwzgu-E'
@@ -937,13 +934,7 @@ def run_lineup_generator():
     font_path = ensure_font(drive)
     print('Font OK'); sys.stdout.flush()
 
-    print('Reading line-ups tab...'); sys.stdout.flush()
-    ws = client.open_by_key(LINEUPS_SHEET_ID).worksheet(LINEUPS_TAB)
-    data = ws.get_all_values()
-    if len(data) <= 1:
-        print('No line-up rows.')
-        return
-
+    ss_lineups = client.open_by_key(LINEUPS_SHEET_ID)
     today = datetime.now().date()
     logo_cache = {}
     opp_logo_files = list_folder_files(drive, OPP_LOGO_FOLDER_ID)
@@ -951,66 +942,66 @@ def run_lineup_generator():
     errors = []
     generated = 0
 
-    for i, row in enumerate(data[1:], start=2):  # sheet row number
-        maxc = max(COL_TEAM, COL_MATCH_DATE, COL_STARTERS,
-                   COL_SUBS, COL_CAPTAIN, COL_STATUS)
-        if len(row) <= maxc:
+    team_tabs = [w for w in ss_lineups.worksheets()
+                 if w.title.strip().upper() in OUR_TEAMS]
+
+    for tab_ws in team_tabs:
+        team = tab_ws.title.strip().upper()
+        data = tab_ws.get_all_values()
+        if len(data) <= 1:
             continue
 
-        team = (row[COL_TEAM] or '').strip()
-        match_date = parse_date(row[COL_MATCH_DATE])
-        status = (row[COL_STATUS] or '').strip()
+        for i, row in enumerate(data[1:], start=2):
+            match_date = parse_date(row[COL_MATCH_DATE]) if len(row) > COL_MATCH_DATE else None
+            status = (row[COL_STATUS] or '').strip() if len(row) > COL_STATUS else ''
 
-        if not team or match_date != today:
-            continue
-        if status:  # already sent
-            print('Row %d (%s): already sent, skipping.' % (i, team))
-            continue
-
-        starters = split_names(row[COL_STARTERS])
-        subs = split_names(row[COL_SUBS])
-        captain = (row[COL_CAPTAIN] or '').strip()
-
-        league = team_league.get(team.lower(), '')
-        if not league:
-            print('Row %d (%s): no league found in Index tab.' % (i, team))
-
-        # League logo (cached per league)
-        if league not in logo_cache:
-            logo_cache[league] = download_image_by_name(drive, league.strip().upper() + '.png', LEAGUE_LOGO_FOLDER_ID) if league else None
-        logo_img = logo_cache.get(league)
-
-        # --- Recent players used for this team (nearest 13 rows above, same team) ---
-        recent_names = []
-        for r in range(i - 2, 0, -1):          # rows above current (data index r-1)
-            prev = data[r - 1]
-            if len(prev) <= max(COL_TEAM, COL_PICTURE):
+            if not match_date or match_date != today:
                 continue
-            if (prev[COL_TEAM] or '').strip().lower() != team.lower():
+            if status:
+                print('%s row %d: already sent, skipping.' % (team, i))
                 continue
-            pic = (prev[COL_PICTURE] or '').strip()
-            recent_names.append(pic)           # keep even blanks? no -> filter below
-            if len([x for x in recent_names]) >= RECENT_ROWS:
-                break
-        recent_names = [n for n in recent_names if n]  # drop blanks; order = most-recent first
-        # We want least-recently-used first for the fallback -> reverse:
-        recent_lru_first = list(reversed(recent_names))
 
-        # --- Pick player + photo ---
-        match_players = starters + subs
-        chosen_name, player_photo = pick_player_with_photo(
-            drive, match_players, recent_lru_first)
-        if chosen_name is None:
-            print('Row %d (%s): no player photo available.' % (i, team))
+            starters = split_names(row[COL_STARTERS]) if len(row) > COL_STARTERS else []
+            subs = split_names(row[COL_SUBS]) if len(row) > COL_SUBS else []
+            captain = (row[COL_CAPTAIN] or '').strip() if len(row) > COL_CAPTAIN else ''
 
-        # --- Opponent (from fixtures) ---
-        opp_name, match_type = find_opponent(client, team, match_date)
-        opp_logo = None
-        if opp_name is None:
-            errors.append('Row %d (%s, %s): no fixture found - not posted.'
-                          % (i, team, match_date))
-            continue
-        else:
+            league = team_league.get(team.lower(), '')
+            if not league:
+                print('%s row %d: no league found in Index tab.' % (team, i))
+
+            if league not in logo_cache:
+                logo_cache[league] = download_image_by_name(
+                    drive, league.strip().upper() + '.png', LEAGUE_LOGO_FOLDER_ID) if league else None
+            logo_img = logo_cache.get(league)
+
+            # Recent players for this team (rows above in this tab)
+            recent_names = []
+            for r in range(i - 2, 0, -1):
+                prev = data[r - 1]
+                if len(prev) <= COL_PICTURE:
+                    continue
+                pic = (prev[COL_PICTURE] or '').strip()
+                recent_names.append(pic)
+                if len(recent_names) >= RECENT_ROWS:
+                    break
+            recent_names = [n for n in recent_names if n]
+            recent_lru_first = list(reversed(recent_names))
+
+            # Pick player + photo
+            match_players = starters + subs
+            chosen_name, player_photo = pick_player_with_photo(
+                drive, match_players, recent_lru_first)
+            if chosen_name is None:
+                print('%s row %d: no player photo available.' % (team, i))
+
+            # Opponent (from fixtures)
+            opp_name, match_type = find_opponent(client, team, match_date)
+            opp_logo = None
+            if opp_name is None:
+                errors.append('%s row %d (%s): no fixture found - not posted.'
+                              % (team, i, match_date))
+                continue
+
             key = _norm(opp_name)
             GALAKSIA_TEAMS = ('6a', '6b', '6c', '6d', 'vets', 'vet',
                               '11a', '11b', '11c', 'bba', 'bbb')
@@ -1019,13 +1010,13 @@ def run_lineup_generator():
                 if opp_is_galaksia:
                     lf = find_logo_file(opp_logo_files, 'galaksia praha 23')
                     if not lf:
-                        errors.append('Row %d (%s): Galaksia logo not found for opponent "%s".'
-                                      % (i, team, opp_name))
+                        errors.append('%s row %d: Galaksia logo not found for "%s".'
+                                      % (team, i, opp_name))
                 else:
                     lf = find_logo_file(opp_logo_files, opp_name)
                     if not lf:
-                        errors.append('Row %d (%s): NO LOGO for opponent "%s" - using placeholder.'
-                                      % (i, team, opp_name))
+                        errors.append('%s row %d: NO LOGO for "%s" - using placeholder.'
+                                      % (team, i, opp_name))
                         lf = find_logo_file(opp_logo_files, 'no logo')
                 if lf:
                     try:
@@ -1033,53 +1024,52 @@ def run_lineup_generator():
                         opp_logo_cache[key] = Image.open(io.BytesIO(d)).convert('RGBA')
                     except Exception as e:
                         opp_logo_cache[key] = None
-                        errors.append('Row %d (%s): opp logo load failed: %s' % (i, team, e))
+                        errors.append('%s row %d: opp logo load failed: %s' % (team, i, e))
                 else:
                     opp_logo_cache[key] = None
             opp_logo = opp_logo_cache.get(key)
 
-        # Build the image
-        try:
-            img = build_lineup_image(team, starters, subs, captain,
-                                     logo_img, background_src, font_path,
-                                     player_photo, opp_name, opp_logo, match_type)
-        except Exception as e:
-            print('Row %d (%s): image build failed: %s' % (i, team, e))
-            continue
+            # Build the image
+            try:
+                img = build_lineup_image(team, starters, subs, captain,
+                                         logo_img, background_src, font_path,
+                                         player_photo, opp_name, opp_logo, match_type)
+            except Exception as e:
+                print('%s row %d: image build failed: %s' % (team, i, e))
+                continue
 
-        # Save locally (Meta posting to be added later)
-        safe_team = re.sub(r'[^A-Za-z0-9]+', '_', team)
-        date_str = match_date.strftime('%Y-%m-%d')
-        out_path = os.path.join(OUTPUT_DIR, 'lineup_%s_%s.png' % (safe_team, date_str))
-        img.save(out_path, 'PNG')
-        print('Row %d (%s): saved %s' % (i, team, out_path))
-        generated += 1
+            safe_team = re.sub(r'[^A-Za-z0-9]+', '_', team)
+            date_str = match_date.strftime('%Y-%m-%d')
+            out_path = os.path.join(OUTPUT_DIR, 'lineup_%s_%s.png' % (safe_team, date_str))
+            img.save(out_path, 'PNG')
+            print('%s row %d: saved %s' % (team, i, out_path))
+            generated += 1
 
-        # Write the Picture column now (col G).
-        if chosen_name:
-            ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-            print('Row %d (%s): picture = %s' % (i, team, chosen_name))
+            # Write the Picture column (col G) on this tab
+            if chosen_name:
+                tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+                print('%s row %d: picture = %s' % (team, i, chosen_name))
 
-        # --- Story only: build, upload, post, cleanup ---
-        story_id = None
-        try:
-            story_path = make_story_version(out_path)
-            story_url, story_id = upload_public_image(user_drive, story_path, POST_UPLOAD_FOLDER_ID)
-            print('  story url: %s' % story_url)
-            post_story_to_meta(story_url)
-        except Exception as e:
-            errors.append('Row %d (%s): Meta posting failed: %s' % (i, team, e))
-        finally:
-            if story_id:
-                try:
-                    user_drive.files().delete(fileId=story_id).execute()
-                    print('  deleted temp Drive file %s' % story_id)
-                except Exception as e:
-                    print('  could not delete %s: %s' % (story_id, e))
+            # Story: build, upload, post, cleanup
+            story_id = None
+            try:
+                story_path = make_story_version(out_path)
+                story_url, story_id = upload_public_image(user_drive, story_path, POST_UPLOAD_FOLDER_ID)
+                print('  story url: %s' % story_url)
+                post_story_to_meta(story_url)
+            except Exception as e:
+                errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
+            finally:
+                if story_id:
+                    try:
+                        user_drive.files().delete(fileId=story_id).execute()
+                        print('  deleted temp Drive file %s' % story_id)
+                    except Exception as e:
+                        print('  could not delete %s: %s' % (story_id, e))
 
-        # --- Mark as sent ---
-        ws.update_cell(i, COL_STATUS + 1, 'Sent')
-        print('Row %d (%s): marked Sent.' % (i, team))
+            # Mark as sent on this tab
+            tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
+            print('%s row %d: marked Sent.' % (team, i))
 
     send_error_email(errors)
     print('Done. Generated %d image(s).' % generated)
