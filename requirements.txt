@@ -6,4 +6,4 @@ google-auth-oauthlib
 Pillow
 pillow-heif
 requests
-rembg
+rembg[cpu]
