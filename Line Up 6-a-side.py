@@ -36,6 +36,8 @@ LINEUPS_SHEET_ID = '1T_Sc_t6n5E_tKpnDEjzd4-6th1T-kHexK-bGezxnZ30'
 COL_MATCH_DATE = 1; COL_STARTERS = 2; COL_SUBS = 3; COL_CAPTAIN = 4; COL_STATUS = 7
 COL_PICTURE = 8
 OUR_TEAMS = ('6A', '6B', '6C', '6D', 'VETS')
+COL_MAIN_COACH = 5   # F
+COL_ASSISTANTS = 6   # G
 
 # --- Fixtures/Index sheet (team -> league) ---
 INDEX_SHEET_ID = '1j6ZN3N8aXnB9vKFdWeXhY-fyo8aH1JlmhWZWHwzgu-E'
@@ -731,7 +733,8 @@ def build_team_league_map(client):
 # IMAGE BUILD
 # ============================================================
 def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_path,
-                       player_photo, opp_name=None, opp_logo=None, match_type=None):
+                       player_photo, opp_name=None, opp_logo=None, match_type=None,
+                       main_coach=None, assistants=None):
     bg = bg_src.copy()
     if bg.size != (CANVAS_W, CANVAS_H):
         bg = bg.resize((CANVAS_W, CANVAS_H))
@@ -744,6 +747,8 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
     label_font = load_font(font_path, TEAM_LABEL_SIZE)
 
     captain_norm = (captain or '').strip().lower()
+    main_coach = (main_coach or '').strip()
+    assistants = assistants or []
 
     # --- STARTERS ---
     # ---------- Left block: centered horizontally & vertically ----------
@@ -770,6 +775,15 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
                 t += ' (C)'
             items.append((t, sub_font, False))
 
+    if main_coach or assistants:
+        items.append(('__GAP__', None, False))
+        items.append(('COACHING STAFF', subs_title_font, True))
+        if main_coach:
+            items.append((main_coach.upper(), sub_font, False))
+        asst_font = load_font(font_path, max(10, SUB_SIZE - 2))
+        for a in assistants:
+            items.append((a.upper(), asst_font, False))
+
     # Measure each line's vertical space and the total height
     heights = []
     total_h = 0
@@ -780,8 +794,10 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
             continue
         if is_title:
             h = line_h(font) + 24 + 40  # underline room + gap after
+        elif font is starter_font:
+            h = STARTER_LINE_GAP
         else:
-            h = STARTER_LINE_GAP if font is starter_font else SUB_LINE_GAP
+            h = SUB_LINE_GAP
         heights.append(h)
         total_h += h
 
@@ -964,6 +980,8 @@ def run_lineup_generator():
             starters = split_names(row[COL_STARTERS]) if len(row) > COL_STARTERS else []
             subs = split_names(row[COL_SUBS]) if len(row) > COL_SUBS else []
             captain = (row[COL_CAPTAIN] or '').strip() if len(row) > COL_CAPTAIN else ''
+            main_coach = (row[COL_MAIN_COACH] or '').strip() if len(row) > COL_MAIN_COACH else ''
+            assistants = split_names(row[COL_ASSISTANTS]) if len(row) > COL_ASSISTANTS else []
 
             league = team_league.get(team.lower(), '')
             if not league:
@@ -1033,7 +1051,8 @@ def run_lineup_generator():
             try:
                 img = build_lineup_image(team, starters, subs, captain,
                                          logo_img, background_src, font_path,
-                                         player_photo, opp_name, opp_logo, match_type)
+                                         player_photo, opp_name, opp_logo, match_type,
+                                         main_coach=main_coach, assistants=assistants)
             except Exception as e:
                 print('%s row %d: image build failed: %s' % (team, i, e))
                 continue
