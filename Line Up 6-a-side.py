@@ -33,8 +33,8 @@ CREDENTIALS_FILE = 'credentials.json'
 LINEUPS_SHEET_ID = '1T_Sc_t6n5E_tKpnDEjzd4-6th1T-kHexK-bGezxnZ30'
 # Tabs are named after the team (6A/6B/6C/6D/VETs).
 # Columns (0-based): A Timestamp | B Match Date | C Starters | D Subs | E Captain | F Status
-COL_MATCH_DATE = 1; COL_STARTERS = 2; COL_SUBS = 3; COL_CAPTAIN = 4; COL_STATUS = 5
-COL_PICTURE = 6
+COL_MATCH_DATE = 1; COL_STARTERS = 2; COL_SUBS = 3; COL_CAPTAIN = 4; COL_STATUS = 7
+COL_PICTURE = 8
 OUR_TEAMS = ('6A', '6B', '6C', '6D', 'VETS')
 
 # --- Fixtures/Index sheet (team -> league) ---
@@ -65,7 +65,7 @@ PLAYER_BOX_TOP = 1200        # top of player area
 PLAYER_BOX_BOTTOM = 3200     # bottom (feet near here)
 
 RECENT_ROWS = 13
-COL_PICTURE = 6              # G  player used for the picture
+COL_PICTURE = 8              # I  player used for the picture
 
 # --- Output & canvas ---
 OUTPUT_DIR = 'output'
@@ -1045,18 +1045,15 @@ def run_lineup_generator():
             print('%s row %d: saved %s' % (team, i, out_path))
             generated += 1
 
-            # Write the Picture column (col G) on this tab
-            if chosen_name:
-                tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-                print('%s row %d: picture = %s' % (team, i, chosen_name))
-
             # Story: build, upload, post, cleanup
             story_id = None
+            posted_ok = False
             try:
                 story_path = make_story_version(out_path)
                 story_url, story_id = upload_public_image(user_drive, story_path, POST_UPLOAD_FOLDER_ID)
                 print('  story url: %s' % story_url)
                 post_story_to_meta(story_url)
+                posted_ok = True
             except Exception as e:
                 errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
             finally:
@@ -1067,9 +1064,15 @@ def run_lineup_generator():
                     except Exception as e:
                         print('  could not delete %s: %s' % (story_id, e))
 
-            # Mark as sent on this tab
-            tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
-            print('%s row %d: marked Sent.' % (team, i))
+            # Only update the sheet if everything posted successfully
+            if posted_ok:
+                if chosen_name:
+                    tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+                    print('%s row %d: picture = %s' % (team, i, chosen_name))
+                tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
+                print('%s row %d: marked Sent.' % (team, i))
+            else:
+                print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
 
     send_error_email(errors)
     print('Done. Generated %d image(s).' % generated)
