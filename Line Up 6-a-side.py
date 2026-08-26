@@ -413,25 +413,12 @@ def find_opponent(client, team, match_date):
 def send_error_email(errors):
     if not errors:
         return
-    try:
-        import base64
-        from email.mime.text import MIMEText
-        creds = Credentials.from_authorized_user_file('token.json', USER_SCOPES)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        gmail = build('gmail', 'v1', credentials=creds)
-        body = 'The following line-up matches had no fixture and were not posted:\n\n- ' \
-               + '\n- '.join(errors)
-        msg = MIMEText(body)
-        msg['to'] = NOTIFY_EMAIL
-        msg['subject'] = 'Line-up generator: matches not posted'
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        gmail.users().messages().send(userId='me', body={'raw': raw}).execute()
-        print('  [error-email] sent to %s' % NOTIFY_EMAIL)
-    except Exception as e:
-        print('  [error-email] FAILED: %s' % e)
-        for e2 in errors:
-            print('    - %s' % e2)
+    print('  [errors] %d issue(s):' % len(errors))
+    for e in errors:
+        print('    - %s' % e)
+    # Fail the run so GitHub Actions flags it (red X + failure email).
+    import sys
+    sys.exit(1)
 
 # cache the player-folder listing (fetched once)
 _PLAYER_FOLDERS = None
@@ -932,7 +919,6 @@ def run_lineup_generator():
     print('Auth...'); import sys; sys.stdout.flush()
     client = get_gspread_client()
     drive = get_drive_service()
-    user_drive = get_user_drive_service()
     print('Auth OK'); sys.stdout.flush()
 
     print('Reading Index tab...'); sys.stdout.flush()
@@ -1064,38 +1050,40 @@ def run_lineup_generator():
             print('%s row %d: saved %s' % (team, i, out_path))
             generated += 1
 
-            # Story: build, upload, post, cleanup
-            story_id = None
-            posted_ok = False
-            try:
-                story_path = make_story_version(out_path)
-                story_url, story_id = upload_public_image(user_drive, story_path, POST_UPLOAD_FOLDER_ID)
-                print('  story url: %s' % story_url)
-                post_story_to_meta(story_url)
-                posted_ok = True
-            except Exception as e:
-                errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
-            finally:
-                if story_id:
-                    try:
-                        user_drive.files().delete(fileId=story_id).execute()
-                        print('  deleted temp Drive file %s' % story_id)
-                    except Exception as e:
-                        print('  could not delete %s: %s' % (story_id, e))
+            story_path = make_story_version(out_path)
 
-            # Only update the sheet if everything posted successfully
-            if posted_ok:
-                if chosen_name:
-                    tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-                    print('%s row %d: picture = %s' % (team, i, chosen_name))
-                tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
-                print('%s row %d: marked Sent.' % (team, i))
+            if POST_ONLY:
+                repo_raw = 'https://raw.githubusercontent.com/OWNER/REPO/main/'
+                story_url = repo_raw + story_path.replace('\\', '/')
+                print('  story url: %s' % story_url)
+                posted_ok = False
+                try:
+                    post_story_to_meta(story_url)
+                    posted_ok = True
+                except Exception as e:
+                    errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
+
+                if posted_ok:
+                    if chosen_name:
+                        tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+                        print('%s row %d: picture = %s' % (team, i, chosen_name))
+                    tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
+                    print('%s row %d: marked Sent.' % (team, i))
+                else:
+                    print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
             else:
-                print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
+                print('  generate-only: image saved, not posting.')
 
     send_error_email(errors)
     print('Done. Generated %d image(s).' % generated)
 
+
+import sys
+GENERATE_ONLY = '--generate-only' in sys.argv
+POST_ONLY = '--post-only' in sys.argv
+if not GENERATE_ONLY and not POST_ONLY:
+    GENERATE_ONLY = True
+    POST_ONLY = True
 
 if __name__ == '__main__':
     run_lineup_generator()
