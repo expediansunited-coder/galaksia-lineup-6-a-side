@@ -1026,6 +1026,7 @@ def run_lineup_generator():
                         errors.append('%s row %d: Galaksia logo not found for "%s".'
                                       % (team, i, opp_name))
                 else:
+                    lf = find_logo_file(opp_logo_files, opp_name)
                     if not lf:
                         print('  %s row %d: NO LOGO for "%s" - using placeholder.'
                               % (team, i, opp_name))
