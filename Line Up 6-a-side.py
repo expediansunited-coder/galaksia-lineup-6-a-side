@@ -925,11 +925,68 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
 def run_lineup_generator():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print('Auth...'); import sys; sys.stdout.flush()
+    import sys
+    print('Auth...'); sys.stdout.flush()
     client = get_gspread_client()
     drive = get_drive_service()
     print('Auth OK'); sys.stdout.flush()
 
+    errors = []
+    today = datetime.now().date()
+    date_str = today.strftime('%Y-%m-%d')
+    ss_lineups = client.open_by_key(LINEUPS_SHEET_ID)
+    team_tabs = [w for w in ss_lineups.worksheets()
+                 if w.title.strip().upper() in OUR_TEAMS]
+
+    # =====================================================
+    # POST-ONLY: only post existing images, no generation
+    # =====================================================
+    if POST_ONLY and not GENERATE_ONLY:
+        repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup-6-a-side/main/'
+        for tab_ws in team_tabs:
+            team = tab_ws.title.strip().upper()
+            data = tab_ws.get_all_values()
+            if len(data) <= 1:
+                continue
+            for i, row in enumerate(data[1:], start=2):
+                match_date = parse_date(row[COL_MATCH_DATE]) if len(row) > COL_MATCH_DATE else None
+                status = (row[COL_STATUS] or '').strip() if len(row) > COL_STATUS else ''
+                if not match_date or match_date != today:
+                    continue
+                if status:
+                    print('%s row %d: already sent, skipping.' % (team, i))
+                    continue
+
+                safe_team = re.sub(r'[^A-Za-z0-9]+', '_', team)
+                story_path = os.path.join(OUTPUT_DIR,
+                    'lineup_%s_%s_story.png' % (safe_team, date_str))
+                if not os.path.exists(story_path):
+                    print('%s row %d: no generated image (%s) - skipping.'
+                          % (team, i, story_path))
+                    continue
+
+                story_url = repo_raw + story_path.replace('\\', '/')
+                print('  story url: %s' % story_url)
+                posted_ok = False
+                try:
+                    post_story_to_meta(story_url)
+                    posted_ok = True
+                except Exception as e:
+                    errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
+
+                if posted_ok:
+                    tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
+                    print('%s row %d: marked Sent.' % (team, i))
+                else:
+                    print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
+
+        send_error_email(errors)
+        print('Post-only complete.')
+        return
+
+    # =====================================================
+    # GENERATE: build + save images (no posting)
+    # =====================================================
     print('Reading Index tab...'); sys.stdout.flush()
     team_league = build_team_league_map(client)
     print('Index OK: %d teams' % len(team_league)); sys.stdout.flush()
@@ -945,16 +1002,10 @@ def run_lineup_generator():
     font_path = ensure_font(drive)
     print('Font OK'); sys.stdout.flush()
 
-    ss_lineups = client.open_by_key(LINEUPS_SHEET_ID)
-    today = datetime.now().date()
     logo_cache = {}
     opp_logo_files = list_folder_files(drive, OPP_LOGO_FOLDER_ID)
     opp_logo_cache = {}
-    errors = []
     generated = 0
-
-    team_tabs = [w for w in ss_lineups.worksheets()
-                 if w.title.strip().upper() in OUR_TEAMS]
 
     for tab_ws in team_tabs:
         team = tab_ws.title.strip().upper()
@@ -987,7 +1038,6 @@ def run_lineup_generator():
                     drive, league.strip().upper() + '.png', LEAGUE_LOGO_FOLDER_ID) if league else None
             logo_img = logo_cache.get(league)
 
-            # Recent players for this team (rows above in this tab)
             recent_names = []
             for r in range(i - 2, 0, -1):
                 prev = data[r - 1]
@@ -1000,16 +1050,13 @@ def run_lineup_generator():
             recent_names = [n for n in recent_names if n]
             recent_lru_first = list(reversed(recent_names))
 
-            # Pick player + photo
             match_players = starters + subs
             chosen_name, player_photo = pick_player_with_photo(
                 drive, match_players, recent_lru_first)
             if chosen_name is None:
                 print('%s row %d: no player photo available.' % (team, i))
 
-            # Opponent (from fixtures)
             opp_name, match_type = find_opponent(client, team, match_date)
-            opp_logo = None
             if opp_name is None:
                 errors.append('%s row %d (%s): no fixture found - not posted.'
                               % (team, i, match_date))
@@ -1042,7 +1089,6 @@ def run_lineup_generator():
                     opp_logo_cache[key] = None
             opp_logo = opp_logo_cache.get(key)
 
-            # Build the image
             try:
                 img = build_lineup_image(team, starters, subs, captain,
                                          logo_img, background_src, font_path,
@@ -1053,35 +1099,16 @@ def run_lineup_generator():
                 continue
 
             safe_team = re.sub(r'[^A-Za-z0-9]+', '_', team)
-            date_str = match_date.strftime('%Y-%m-%d')
             out_path = os.path.join(OUTPUT_DIR, 'lineup_%s_%s.png' % (safe_team, date_str))
             img.save(out_path, 'PNG')
             print('%s row %d: saved %s' % (team, i, out_path))
+            make_story_version(out_path)
             generated += 1
 
-            story_path = make_story_version(out_path)
-
-            if POST_ONLY:
-                repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup-6-a-side/main/'
-                story_url = repo_raw + story_path.replace('\\', '/')
-                print('  story url: %s' % story_url)
-                posted_ok = False
-                try:
-                    post_story_to_meta(story_url)
-                    posted_ok = True
-                except Exception as e:
-                    errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
-
-                if posted_ok:
-                    if chosen_name:
-                        tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-                        print('%s row %d: picture = %s' % (team, i, chosen_name))
-                    tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
-                    print('%s row %d: marked Sent.' % (team, i))
-                else:
-                    print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
-            else:
-                print('  generate-only: image saved, not posting.')
+            # Record the chosen player's name now (so it's saved even in generate step)
+            if chosen_name:
+                tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+                print('%s row %d: picture = %s' % (team, i, chosen_name))
 
     send_error_email(errors)
     print('Done. Generated %d image(s).' % generated)
