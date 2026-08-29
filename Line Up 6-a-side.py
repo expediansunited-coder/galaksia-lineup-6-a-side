@@ -657,24 +657,33 @@ def post_story_to_meta(story_url):
     page_id = cfg['page_id']; ig_id = cfg['ig_user_id']
     user_token = cfg['page_access_token']
     if not story_url:
-        print('    [meta] ERROR: no story url; cannot post.')
-        return
+        raise RuntimeError('no story url; cannot post.')
     try:
         token = _get_page_token(page_id, user_token)
     except Exception as e:
         print('    [meta] could not derive Page token: %s' % e)
         token = user_token
+
+    fb_ok = False
+    ig_ok = False
+
     try:
         photo = _fb_page_photo(page_id, token, story_url, '', published=False)
         _fb_story(page_id, token, photo['id'])
         print('    [meta] FB story OK')
+        fb_ok = True
     except Exception as e:
         print('    [meta] FB story FAILED: %s' % e)
+
     try:
         _ig_publish(ig_id, user_token, story_url, is_story=True)
         print('    [meta] IG story OK')
+        ig_ok = True
     except Exception as e:
         print('    [meta] IG story FAILED: %s' % e)
+
+    if not (fb_ok or ig_ok):
+        raise RuntimeError('Both FB and IG story posting failed.')
 
 # ============================================================
 # GENERIC HELPERS
