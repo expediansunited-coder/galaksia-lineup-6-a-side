@@ -1062,7 +1062,7 @@ def run_lineup_generator():
             story_path = make_story_version(out_path)
 
             if POST_ONLY:
-                repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup/main/'
+                repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup-6-a-side/main/'
                 story_url = repo_raw + story_path.replace('\\', '/')
                 print('  story url: %s' % story_url)
                 posted_ok = False
