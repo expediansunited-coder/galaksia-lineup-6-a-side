@@ -1017,10 +1017,9 @@ def run_lineup_generator():
                         errors.append('%s row %d: Galaksia logo not found for "%s".'
                                       % (team, i, opp_name))
                 else:
-                    lf = find_logo_file(opp_logo_files, opp_name)
                     if not lf:
-                        errors.append('%s row %d: NO LOGO for "%s" - using placeholder.'
-                                      % (team, i, opp_name))
+                        print('  %s row %d: NO LOGO for "%s" - using placeholder.'
+                              % (team, i, opp_name))
                         lf = find_logo_file(opp_logo_files, 'no logo')
                 if lf:
                     try:
@@ -1053,7 +1052,7 @@ def run_lineup_generator():
             story_path = make_story_version(out_path)
 
             if POST_ONLY:
-                repo_raw = 'https://raw.githubusercontent.com/OWNER/REPO/main/'
+                repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup/main/'
                 story_url = repo_raw + story_path.replace('\\', '/')
                 print('  story url: %s' % story_url)
                 posted_ok = False
