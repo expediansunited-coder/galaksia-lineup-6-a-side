@@ -29,6 +29,8 @@ from googleapiclient.http import MediaFileUpload
 # ============================================================
 CREDENTIALS_FILE = 'credentials.json'
 
+NUMBERS_SHEET_ID = '1AOHk58LP2RV4RK5M8HdYhMPbS0Ue5QQWK2OJWwlCCig'
+
 # --- Line-ups sheet ---
 LINEUPS_SHEET_ID = '1T_Sc_t6n5E_tKpnDEjzd4-6th1T-kHexK-bGezxnZ30'
 # Tabs are named after the team (6A/6B/6C/6D/VETs).
@@ -688,6 +690,78 @@ def post_story_to_meta(story_url):
 # ============================================================
 # GENERIC HELPERS
 # ============================================================
+def load_numbers_tab(client, tab_name):
+    try:
+        ws = client.open_by_key(NUMBERS_SHEET_ID).worksheet(tab_name)
+    except Exception:
+        return []
+    data = ws.get_all_values()
+    out = []
+    for row in data[1:]:
+        if len(row) < 2:
+            continue
+        name = (row[0] or '').strip()
+        if not name:
+            continue
+        match = (row[1] or '').strip() if len(row) > 1 else ''
+        c2 = (row[3] or '').strip() if len(row) > 3 else ''    # 2nd choice = column D
+        c3raw = (row[4] or '').strip() if len(row) > 4 else ''
+        c3list = [x.strip() for x in re.split(r'[\/,]', c3raw) if x.strip()]
+        out.append({'name': name, 'match': match, 'c2': c2, 'c3list': c3list})
+    return out
+
+
+def find_number_entry(entries, player_name):
+    target = _norm(player_name)
+    if not target:
+        return None
+    for e in entries:
+        if _norm(e['name']) == target:
+            return e
+    ptoks = set(_tokens(player_name))
+    best = None
+    for e in entries:
+        etoks = set(_tokens(e['name']))
+        if not etoks:
+            continue
+        if ptoks <= etoks or etoks <= ptoks:
+            return e
+        if ptoks & etoks:
+            best = e
+    return best
+
+
+def assign_numbers(players, entries):
+    used = set()
+    result = {}
+
+    def take(n):
+        n = (n or '').strip()
+        if n and n not in used:
+            used.add(n)
+            return n
+        return None
+
+    for p in players:
+        e = find_number_entry(entries, p)
+        num = None
+        if e:
+            num = take(e['match'])
+            if num is None:
+                num = take(e['c2'])
+            if num is None:
+                for c in e['c3list']:
+                    num = take(c)
+                    if num:
+                        break
+        if num is None:
+            free = [str(x) for x in range(1, 100) if str(x) not in used]
+            num = random.choice(free) if free else ''
+            if num:
+                used.add(num)
+        result[p] = num
+    return result
+
 def load_font(font_path, size):
     if font_path and os.path.exists(font_path):
         try:
@@ -730,7 +804,8 @@ def build_team_league_map(client):
 # ============================================================
 def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_path,
                        player_photo, opp_name=None, opp_logo=None, match_type=None,
-                       main_coach=None, assistants=None):
+                       main_coach=None, assistants=None, number_map=None):
+    number_map = number_map or {}
     bg = bg_src.copy()
     if bg.size != (CANVAS_W, CANVAS_H):
         bg = bg.resize((CANVAS_W, CANVAS_H))
@@ -755,21 +830,31 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
         return b[3] - b[1]
 
     # Build the list of lines: (text, font, is_title)
+    def by_number(name):
+        v = number_map.get(name, '')
+        try:
+            return int(re.sub(r'[^\d]', '', str(v)))
+        except (ValueError, TypeError):
+            return 9999
+    starters = sorted(starters, key=by_number)
+    subs = sorted(subs, key=by_number)
+
+    def label_with_num(name):
+        num = str(number_map.get(name, '') or '')
+        t = (num + ' ' if num else '') + name.upper()
+        if name.strip().lower() == captain_norm:
+            t += ' (C)'
+        return t
+
     items = []
     items.append(('STARTERS', title_font, True))
     for name in starters:
-        t = name.upper()
-        if name.strip().lower() == captain_norm:
-            t += ' (C)'
-        items.append((t, starter_font, False))
+        items.append((label_with_num(name), starter_font, False))
     if subs:
         items.append(('__GAP__', None, False))
         items.append(('SUBSTITUTES', subs_title_font, True))
         for name in subs:
-            t = name.upper()
-            if name.strip().lower() == captain_norm:
-                t += ' (C)'
-            items.append((t, sub_font, False))
+            items.append((label_with_num(name), sub_font, False))
 
     if main_coach or assistants:
         items.append(('__GAP__', None, False))
@@ -938,6 +1023,24 @@ def run_lineup_generator():
     team_tabs = [w for w in ss_lineups.worksheets()
                  if w.title.strip().upper() in OUR_TEAMS]
 
+    num_cache = {}
+    NUM_ORDER = {
+        '6A':   ['6A', '6B', '6C', '6D'],
+        '6B':   ['6B', '6C', '6D', '6A'],
+        '6C':   ['6C', '6D', '6B', '6A'],
+        '6D':   ['6D', '6C', '6B', '6A'],
+        'VETS': ['VETs', '6A', '6B', '6C', '6D'],
+    }
+    def numbers_for_team(team):
+        if team in num_cache:
+            return num_cache[team]
+        order = NUM_ORDER.get(team, [])
+        entries = []
+        for tab in order:
+            entries += load_numbers_tab(client, tab)
+        num_cache[team] = entries
+        return entries
+
     # =====================================================
     # POST-ONLY: only post existing images, no generation
     # =====================================================
@@ -1051,6 +1154,7 @@ def run_lineup_generator():
             recent_lru_first = list(reversed(recent_names))
 
             match_players = starters + subs
+            number_map = assign_numbers(match_players, numbers_for_team(team))
             chosen_name, player_photo = pick_player_with_photo(
                 drive, match_players, recent_lru_first)
             if chosen_name is None:
@@ -1093,7 +1197,8 @@ def run_lineup_generator():
                 img = build_lineup_image(team, starters, subs, captain,
                                          logo_img, background_src, font_path,
                                          player_photo, opp_name, opp_logo, match_type,
-                                         main_coach=main_coach, assistants=assistants)
+                                         main_coach=main_coach, assistants=assistants,
+                                         number_map=number_map)
             except Exception as e:
                 print('%s row %d: image build failed: %s' % (team, i, e))
                 continue
