@@ -41,6 +41,48 @@ OUR_TEAMS = ('6A', '6B', '6C', '6D', 'VETS')
 COL_MAIN_COACH = 5   # F
 COL_ASSISTANTS = 6   # G
 
+COL_MD_PICTURE = 9   # J — new "MD Picture" column
+
+# Fixture tab columns (confirmed by you):
+# Date(0) Time(1) Home Team(2) Away Team(3) Location(4) Match Type(5) Round(6) Status(7)
+FIX_COL_DATE = 0
+FIX_COL_TIME = 1
+FIX_COL_HOME = 2
+FIX_COL_AWAY = 3
+FIX_COL_LOCATION = 4
+FIX_COL_MTYPE = 5
+
+# Match Day canvas/layout (separate size from the lineup canvas)
+MD_CANVAS_W = 768
+MD_CANVAS_H = 960
+MD_BACKGROUND_NAME = '6-a-side match day'
+MD_GALAKSIA_LOGO_NAME = 'galaksia praha 23'
+
+MD_INFO_MAX_W       = int(MD_CANVAS_W * 0.28)
+MD_LOGO_MAX         = int(MD_CANVAS_W * 0.14)
+MD_LOGO1_CX         = int(MD_CANVAS_W * 0.10)
+MD_LOGO2_CX         = int(MD_CANVAS_W * 0.30)
+MD_LOGO_CY          = int(MD_CANVAS_H * 0.07)
+MD_TEAMS_TEXT_Y     = int(MD_CANVAS_H * 0.155)
+MD_TEAMS_TEXT_SIZE  = int(MD_CANVAS_H * 0.022)
+MD_TEAM_NAME_MAX_W  = int(MD_CANVAS_W * 0.20)
+MD_LEAGUE_LOGO_MAX  = int(MD_CANVAS_W * 0.13)
+MD_LEAGUE_CX        = int(MD_CANVAS_W * 0.88)
+MD_LEAGUE_CY        = int(MD_CANVAS_H * 0.055)
+MD_PHOTO_BOX_LEFT   = int(MD_CANVAS_W * 0.42)
+MD_PHOTO_BOX_RIGHT  = int(MD_CANVAS_W * 0.88)
+MD_PHOTO_BOX_TOP    = int(MD_CANVAS_H * 0.19)
+MD_PHOTO_BOX_BOTTOM = int(MD_CANVAS_H * 0.99)
+MD_INFO_LEFT        = int(MD_CANVAS_W * 0.09)
+MD_DATE_Y1          = int(MD_CANVAS_H * 0.475)
+MD_DATE_Y2          = int(MD_CANVAS_H * 0.505)
+MD_LOC_Y            = int(MD_CANVAS_H * 0.615)
+MD_KICK_LABEL_Y     = int(MD_CANVAS_H * 0.720)
+MD_KICK_TIME_Y      = int(MD_CANVAS_H * 0.750)
+MD_INFO_SIZE        = int(MD_CANVAS_H * 0.028)
+
+GALAKSIA_TEAM_CODES = ('6a','6b','6c','6d','vets','vet','11a','11b','11c','bba','bbb')
+
 # --- Fixtures/Index sheet (team -> league) ---
 INDEX_SHEET_ID = '1j6ZN3N8aXnB9vKFdWeXhY-fyo8aH1JlmhWZWHwzgu-E'
 INDEX_TAB = 'Index'
@@ -389,7 +431,8 @@ def fit_font_width(font_path, text, max_w, start_size, min_size=20):
     return load_font(font_path, min_size)
 
 def find_opponent(client, team, match_date):
-    """Search both fixtures tabs for team+date; return (opponent, match_type) or (None, None)."""
+    """Search both fixtures tabs for team+date; return
+    (opponent, match_type, kickoff_time, location) or (None, None, None, None)."""
     ss = client.open_by_key(INDEX_SHEET_ID)
     for tab in (FIXTURES_FRIENDLY_TAB, FIXTURES_LEAGUECUP_TAB):
         try:
@@ -398,19 +441,21 @@ def find_opponent(client, team, match_date):
             continue
         data = ws.get_all_values()
         for row in data[1:]:
-            if len(row) < 4:
+            if len(row) <= FIX_COL_MTYPE:
                 continue
-            d = parse_date(row[0])
+            d = parse_date(row[FIX_COL_DATE])
             if d != match_date:
                 continue
-            home = (row[2] or '').strip()
-            away = (row[3] or '').strip()
-            mtype = (row[5] if len(row) > 5 else '').strip()
+            home = (row[FIX_COL_HOME] or '').strip()
+            away = (row[FIX_COL_AWAY] or '').strip()
+            mtype = (row[FIX_COL_MTYPE] or '').strip()
+            kickoff = (row[FIX_COL_TIME] or '').strip()
+            location = (row[FIX_COL_LOCATION] or '').strip()
             if home.upper() == team.upper():
-                return away, mtype
+                return away, mtype, kickoff, location, True   # True = our team is home
             if away.upper() == team.upper():
-                return home, mtype
-    return None, None
+                return home, mtype, kickoff, location, False
+    return None, None, None, None, None
 
 def send_error_email(errors):
     if not errors:
@@ -522,29 +567,37 @@ def get_random_player_photo(drive, player_name):
           % (player_name, len(images)))
     return None
 
-def pick_player_with_photo(drive, match_players, recent_names):
+def pick_player_with_photo(drive, match_players, recent_names, exclude=None):
     """match_players: ordered list of this match's players (starters+subs).
     recent_names: Picture values from previous rows, least-recently-used first.
+    exclude: names that must NOT be picked (e.g. the lineup's chosen player).
     Returns (player_name, photo_img) or (None, None)."""
+    exclude_norm = set(_norm(n) for n in (exclude or []) if n)
     recent_norm = [_norm(n) for n in recent_names if n]
 
-    # Preferred pool: players NOT in recent, with a usable photo
-    preferred = [p for p in match_players if _norm(p) not in recent_norm]
+    preferred = [p for p in match_players
+                 if _norm(p) not in recent_norm and _norm(p) not in exclude_norm]
     random.shuffle(preferred)
     for p in preferred:
         photo = get_random_player_photo(drive, p)
         if photo is not None:
             return p, photo
 
-    # Fallback: among recent players (least-recently-used first),
-    # first one that maps to a match player AND has a photo.
     for rn in recent_names:
-        # find the match player matching this recent name
         for p in match_players:
-            if _norm(p) == _norm(rn):
+            if _norm(p) == _norm(rn) and _norm(p) not in exclude_norm:
                 photo = get_random_player_photo(drive, p)
                 if photo is not None:
                     return p, photo
+
+    # Last resort: ignore recency/exclude rather than posting no photo at all
+    fallback_pool = [p for p in match_players if _norm(p) not in recent_norm]
+    random.shuffle(fallback_pool)
+    for p in fallback_pool:
+        photo = get_random_player_photo(drive, p)
+        if photo is not None:
+            return p, photo
+
     return None, None
 
 def crop_to_content(img):
@@ -690,6 +743,16 @@ def post_story_to_meta(story_url):
 # ============================================================
 # GENERIC HELPERS
 # ============================================================
+def clean_team_name(name):
+    s = (name or '').strip()
+    return re.sub(r'\s*,?\s*(z\.s\.|a\.s\.)\s*$', '', s, flags=re.I).strip()
+
+def display_team_name(name):
+    n = (name or '').strip()
+    if _norm(n) in GALAKSIA_TEAM_CODES or 'galaksia' in n.lower():
+        return 'GP23 ' + n.upper()
+    return n
+
 def load_numbers_tab(client, tab_name):
     try:
         ws = client.open_by_key(NUMBERS_SHEET_ID).worksheet(tab_name)
@@ -1004,6 +1067,150 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
 
     return bg.convert('RGB')
 
+def build_matchday_image(home_team, away_team, match_type, league,
+                         kickoff_txt, location_txt, date_txt1, date_txt2,
+                         player_photo, bg_src, font_path, drive, logo_files):
+    bg = bg_src.copy().convert('RGBA')
+    if bg.size != (MD_CANVAS_W, MD_CANVAS_H):
+        bg = bg.resize((MD_CANVAS_W, MD_CANVAS_H))
+    draw = ImageDraw.Draw(bg)
+
+    def resolve_logo_md(team_name):
+        if _norm(team_name) in GALAKSIA_TEAM_CODES or 'galaksia' in team_name.lower():
+            lf = find_logo_file(logo_files, MD_GALAKSIA_LOGO_NAME)
+        else:
+            lf = find_logo_file(logo_files, clean_team_name(team_name)) or find_logo_file(logo_files, 'no logo')
+        if not lf:
+            return None
+        return Image.open(io.BytesIO(download_file_bytes(drive, lf['id']))).convert('RGBA')
+
+    home_logo = resolve_logo_md(home_team)
+    away_logo = resolve_logo_md(away_team)
+
+    def paste_logo(logo, cx):
+        if logo is None:
+            return
+        l = remove_edge_background(logo)
+        cb = l.getbbox()
+        if cb:
+            l = l.crop(cb)
+        scale = MD_LOGO_MAX / max(l.width, l.height)
+        l = l.resize((max(1, int(l.width * scale)), max(1, int(l.height * scale))), Image.LANCZOS)
+        bg.alpha_composite(l, (int(cx - l.width / 2), int(MD_LOGO_CY - l.height / 2)))
+
+    paste_logo(home_logo, MD_LOGO1_CX)
+    paste_logo(away_logo, MD_LOGO2_CX)
+
+    # ---- Team names + VS, center-aligned as a block ----
+    tf = load_font(font_path, MD_TEAMS_TEXT_SIZE)
+    home_disp = display_team_name(home_team).upper()
+    away_disp = display_team_name(away_team).upper()
+    line_h = int(MD_TEAMS_TEXT_SIZE * 1.1)
+
+    def wrap(text, max_w):
+        words = text.split()
+        lines, cur = [], ''
+        for wd in words:
+            test = (cur + ' ' + wd).strip()
+            if draw.textbbox((0, 0), test, font=tf)[2] <= max_w:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = wd
+        if cur:
+            lines.append(cur)
+        return lines or ['']
+
+    def draw_block_lines(lines, cx, top_y):
+        for k, ln in enumerate(lines):
+            b = draw.textbbox((0, 0), ln, font=tf)
+            w = b[2] - b[0]
+            draw.text((int(cx - w / 2), top_y + k * line_h), ln, font=tf, fill=WHITE)
+
+    home_lines = wrap(home_disp, MD_TEAM_NAME_MAX_W)
+    away_lines = wrap(away_disp, MD_TEAM_NAME_MAX_W)
+
+    center_y = MD_TEAMS_TEXT_Y + line_h / 2   # fixed center, based on single-line position
+    home_top = center_y - (len(home_lines) * line_h) / 2
+    away_top = center_y - (len(away_lines) * line_h) / 2
+    vs_y = center_y - line_h / 2
+
+    draw_block_lines(home_lines, MD_LOGO1_CX, home_top)
+    draw_block_lines(away_lines, MD_LOGO2_CX, away_top)
+
+    vb = draw.textbbox((0, 0), 'VS', font=tf)
+    vw = vb[2] - vb[0]
+    draw.text((int((MD_LOGO1_CX + MD_LOGO2_CX) / 2 - vw / 2), vs_y), 'VS', font=tf, fill=WHITE)
+
+    # ---- League logo (top-right), skipped if Friendly ----
+    if (match_type or '').strip().lower() != 'friendly' and league:
+        ll = find_logo_file(logo_files, league)
+        if ll:
+            ll_img = Image.open(io.BytesIO(download_file_bytes(drive, ll['id']))).convert('RGBA')
+            cb = ll_img.getbbox()
+            if cb:
+                ll_img = ll_img.crop(cb)
+            scale = MD_LEAGUE_LOGO_MAX / max(ll_img.width, ll_img.height)
+            ll_img = ll_img.resize((max(1, int(ll_img.width * scale)),
+                                    max(1, int(ll_img.height * scale))), Image.LANCZOS)
+            bg.alpha_composite(ll_img, (int(MD_LEAGUE_CX - ll_img.width / 2),
+                                       int(MD_LEAGUE_CY - ll_img.height / 2)))
+
+    # ---- Player photo in the white box ----
+    if player_photo is not None:
+        ph = player_photo.copy()
+        cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
+        cl, ct, cr, cbot = cb
+        content_h = cbot - ct
+        target_h = MD_PHOTO_BOX_BOTTOM - MD_PHOTO_BOX_TOP
+        scale = target_h / content_h
+        ph = ph.resize((max(1, int(round(ph.width * scale))),
+                       max(1, int(round(ph.height * scale)))), Image.LANCZOS)
+        sct = int(round(ct * scale))
+        scl = int(round(cl * scale))
+        scr = int(round(cr * scale))
+        content_cx = (scl + scr) / 2
+        py = MD_PHOTO_BOX_TOP - sct
+        box_cx = (MD_PHOTO_BOX_LEFT + MD_PHOTO_BOX_RIGHT) / 2
+        px = int(round(box_cx - content_cx))
+        bg.alpha_composite(ph, (px, py))
+
+    # ---- Date / Location / Kickoff text ----
+    info_font = load_font(font_path, MD_INFO_SIZE)
+    draw.text((MD_INFO_LEFT, MD_DATE_Y1), date_txt1, font=info_font, fill=WHITE)
+    draw.text((MD_INFO_LEFT, MD_DATE_Y2), date_txt2, font=info_font, fill=WHITE)
+
+    def wrap_text(text, fnt, max_w):
+        words = text.split()
+        lines, cur = [], ''
+        for wd in words:
+            test = (cur + ' ' + wd).strip()
+            if draw.textbbox((0, 0), test, font=fnt)[2] <= max_w:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = wd
+        if cur:
+            lines.append(cur)
+        return lines or ['']
+
+    loc_lines = wrap_text((location_txt or '').upper(), info_font, MD_INFO_MAX_W)
+    if len(loc_lines) > 2:
+        loc_lines = [loc_lines[0], ' '.join(loc_lines[1:])]
+
+    loc_line_h = int(MD_INFO_SIZE * 1.05)
+    loc_center_y = MD_LOC_Y + loc_line_h / 2
+    loc_top = loc_center_y - (len(loc_lines) * loc_line_h) / 2
+    for k, ln in enumerate(loc_lines):
+        draw.text((MD_INFO_LEFT, loc_top + k * loc_line_h), ln, font=info_font, fill=WHITE)
+
+    draw.text((MD_INFO_LEFT, MD_KICK_LABEL_Y), 'KICK OFF', font=info_font, fill=WHITE)
+    draw.text((MD_INFO_LEFT, MD_KICK_TIME_Y), kickoff_txt or '', font=info_font, fill=WHITE)
+
+    return bg.convert('RGB')
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -1046,6 +1253,18 @@ def run_lineup_generator():
     # =====================================================
     if POST_ONLY and not GENERATE_ONLY:
         repo_raw = 'https://raw.githubusercontent.com/expediansunited-coder/galaksia-lineup-6-a-side/main/'
+
+        def kickoff_sort_key(kickoff_str):
+            """Parse 'HH:MM' into minutes for sorting; unparseable -> pushed to end."""
+            s = (kickoff_str or '').strip()
+            m = re.match(r'^(\d{1,2}):(\d{2})', s)
+            if not m:
+                return 99999
+            h, mnt = int(m.group(1)), int(m.group(2))
+            return h * 60 + mnt
+
+        # ---- Step 1: collect all of today's pending matches across all team tabs ----
+        pending_matches = []  # each: dict with team, row_idx, tab_ws, kickoff_txt, safe_team
         for tab_ws in team_tabs:
             team = tab_ws.title.strip().upper()
             data = tab_ws.get_all_values()
@@ -1060,28 +1279,67 @@ def run_lineup_generator():
                     print('%s row %d: already sent, skipping.' % (team, i))
                     continue
 
+                # Re-derive kickoff time for sort order (fixtures may have changed
+                # since generation; this keeps posting order accurate/independent).
+                opp_name, match_type, kickoff_txt, location_txt, we_are_home = \
+                    find_opponent(client, team, match_date)
+
                 safe_team = re.sub(r'[^A-Za-z0-9]+', '_', team)
-                story_path = os.path.join(OUTPUT_DIR,
-                    'lineup_%s_%s_story.png' % (safe_team, date_str))
-                if not os.path.exists(story_path):
-                    print('%s row %d: no generated image (%s) - skipping.'
-                          % (team, i, story_path))
-                    continue
+                pending_matches.append({
+                    'team': team,
+                    'row_idx': i,
+                    'tab_ws': tab_ws,
+                    'safe_team': safe_team,
+                    'kickoff_txt': kickoff_txt or '',
+                })
 
-                story_url = repo_raw + story_path.replace('\\', '/')
-                print('  story url: %s' % story_url)
-                posted_ok = False
+        # ---- Step 2: sort matches by kickoff time (multiple matches same day) ----
+        pending_matches.sort(key=lambda m: kickoff_sort_key(m['kickoff_txt']))
+
+        # ---- Step 3: for each match, post Match Day THEN Line-up ----
+        for m in pending_matches:
+            team = m['team']; i = m['row_idx']; tab_ws = m['tab_ws']
+            safe_team = m['safe_team']
+
+            md_story_path = os.path.join(OUTPUT_DIR,
+                'matchday_%s_%s_story.png' % (safe_team, date_str))
+            lineup_story_path = os.path.join(OUTPUT_DIR,
+                'lineup_%s_%s_story.png' % (safe_team, date_str))
+
+            md_posted_ok = True   # default True if file doesn't exist (nothing to post)
+            if os.path.exists(md_story_path):
+                md_story_url = repo_raw + md_story_path.replace('\\', '/')
+                print('%s row %d: posting Match Day -> %s' % (team, i, md_story_url))
+                md_posted_ok = False
                 try:
-                    post_story_to_meta(story_url)
-                    posted_ok = True
+                    post_story_to_meta(md_story_url)
+                    md_posted_ok = True
+                    print('%s row %d: Match Day posted OK.' % (team, i))
                 except Exception as e:
-                    errors.append('%s row %d: Meta posting failed: %s' % (team, i, e))
+                    errors.append('%s row %d: Match Day posting failed: %s' % (team, i, e))
+            else:
+                print('%s row %d: no Match Day image (%s) - skipping MD post.'
+                      % (team, i, md_story_path))
 
-                if posted_ok:
-                    tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
-                    print('%s row %d: marked Sent.' % (team, i))
-                else:
-                    print('%s row %d: NOT marked Sent (posting failed).' % (team, i))
+            lineup_posted_ok = False
+            if os.path.exists(lineup_story_path):
+                lineup_story_url = repo_raw + lineup_story_path.replace('\\', '/')
+                print('%s row %d: posting Line-up -> %s' % (team, i, lineup_story_url))
+                try:
+                    post_story_to_meta(lineup_story_url)
+                    lineup_posted_ok = True
+                    print('%s row %d: Line-up posted OK.' % (team, i))
+                except Exception as e:
+                    errors.append('%s row %d: Line-up posting failed: %s' % (team, i, e))
+            else:
+                print('%s row %d: no Line-up image (%s) - skipping.'
+                      % (team, i, lineup_story_path))
+
+            if md_posted_ok and lineup_posted_ok:
+                tab_ws.update_cell(i, COL_STATUS + 1, 'Sent')
+                print('%s row %d: marked Sent.' % (team, i))
+            else:
+                print('%s row %d: NOT marked Sent (one or both posts failed).' % (team, i))
 
         send_error_email(errors)
         print('Post-only complete.')
@@ -1109,6 +1367,13 @@ def run_lineup_generator():
     opp_logo_files = list_folder_files(drive, OPP_LOGO_FOLDER_ID)
     opp_logo_cache = {}
     generated = 0
+
+    # Match Day assets — loaded once, reused for every row
+    md_background = download_image_by_name(drive, MD_BACKGROUND_NAME)
+    if md_background is None:
+        print('WARNING: Match Day background "%s" not found; MD posts will be skipped.'
+              % MD_BACKGROUND_NAME)
+    md_logo_files = opp_logo_files  # same Drive folder holds opponent+league+galaksia logos
 
     for tab_ws in team_tabs:
         team = tab_ws.title.strip().upper()
@@ -1160,11 +1425,22 @@ def run_lineup_generator():
             if chosen_name is None:
                 print('%s row %d: no player photo available.' % (team, i))
 
-            opp_name, match_type = find_opponent(client, team, match_date)
+            opp_name, match_type, kickoff_txt, location_txt, we_are_home = find_opponent(client, team, match_date)
             if opp_name is None:
                 errors.append('%s row %d (%s): no fixture found - not posted.'
-                              % (team, i, match_date))
+                            % (team, i, match_date))
                 continue
+
+            MONTHS = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY',
+                    'AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER']
+            def ordinal(n):
+                if 10 <= n % 100 <= 20:
+                    suf = 'TH'
+                else:
+                    suf = {1:'ST',2:'ND',3:'RD'}.get(n % 10, 'TH')
+                return str(n) + suf
+            date_txt1 = MONTHS[match_date.month - 1]
+            date_txt2 = '%s, %d' % (ordinal(match_date.day), match_date.year)
 
             key = _norm(opp_name)
             GALAKSIA_TEAMS = ('6a', '6b', '6c', '6d', 'vets', 'vet',
@@ -1214,6 +1490,50 @@ def run_lineup_generator():
             if chosen_name:
                 tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
                 print('%s row %d: picture = %s' % (team, i, chosen_name))
+
+            # ---- MATCH DAY POST (same row data, different player photo) ----
+            if md_background is not None:
+                # Recent MD picture names, least-recently-used first (mirrors the
+                # lineup "Picture" recency logic, but reads column COL_MD_PICTURE)
+                recent_md_names = []
+                for r in range(i - 2, 0, -1):
+                    prev = data[r - 1]
+                    if len(prev) <= COL_MD_PICTURE:
+                        continue
+                    pic = (prev[COL_MD_PICTURE] or '').strip()
+                    recent_md_names.append(pic)
+                    if len(recent_md_names) >= RECENT_ROWS:
+                        break
+                recent_md_names = [n for n in recent_md_names if n]
+                recent_md_lru_first = list(reversed(recent_md_names))
+
+                md_exclude = [chosen_name] if chosen_name else []
+                md_chosen_name, md_player_photo = pick_player_with_photo(
+                    drive, match_players, recent_md_lru_first, exclude=md_exclude)
+                if md_chosen_name is None:
+                    print('%s row %d: no MD player photo available.' % (team, i))
+
+                try:
+                    md_img = build_matchday_image(
+                        home_team=(team if we_are_home else opp_name),
+                        away_team=(opp_name if we_are_home else team),
+                        match_type=match_type, league=league,
+                        kickoff_txt=kickoff_txt, location_txt=location_txt,
+                        date_txt1=date_txt1, date_txt2=date_txt2,
+                        player_photo=md_player_photo, bg_src=md_background,
+                        font_path=font_path, drive=drive, logo_files=md_logo_files)
+
+                    md_out_path = os.path.join(
+                        OUTPUT_DIR, 'matchday_%s_%s.png' % (safe_team, date_str))
+                    md_img.save(md_out_path, 'PNG')
+                    print('%s row %d: saved %s' % (team, i, md_out_path))
+                    make_story_version(md_out_path)
+
+                    if md_chosen_name:
+                        tab_ws.update_cell(i, COL_MD_PICTURE + 1, md_chosen_name)
+                        print('%s row %d: MD picture = %s' % (team, i, md_chosen_name))
+                except Exception as e:
+                    print('%s row %d: match day image build failed: %s' % (team, i, e))
 
     send_error_email(errors)
     print('Done. Generated %d image(s).' % generated)
