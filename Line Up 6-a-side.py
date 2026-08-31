@@ -809,6 +809,8 @@ def assign_numbers(players, entries):
         e = find_number_entry(entries, p)
         num = None
         if e:
+            print('  [numbers] "%s" -> sheet entry found: name="%s" match=%s c2=%s c3=%s'
+                  % (p, e['name'], e['match'], e['c2'], e['c3list']))
             num = take(e['match'])
             if num is None:
                 num = take(e['c2'])
@@ -817,11 +819,16 @@ def assign_numbers(players, entries):
                     num = take(c)
                     if num:
                         break
+        else:
+            print('  [numbers] "%s" -> NO sheet entry found at all' % p)
         if num is None:
             free = [str(x) for x in range(1, 100) if str(x) not in used]
             num = random.choice(free) if free else ''
             if num:
                 used.add(num)
+            print('  [numbers] "%s" -> FINAL: random #%s' % (p, num))
+        else:
+            print('  [numbers] "%s" -> FINAL: #%s' % (p, num))
         result[p] = num
     return result
 
