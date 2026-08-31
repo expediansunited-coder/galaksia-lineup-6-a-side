@@ -55,7 +55,6 @@ FIX_COL_MTYPE = 5
 # Match Day canvas/layout (separate size from the lineup canvas)
 MD_CANVAS_W = 768
 MD_CANVAS_H = 960
-MD_BACKGROUND_NAME = '6-a-side match day'
 MD_GALAKSIA_LOGO_NAME = 'galaksia praha 23'
 
 MD_INFO_MAX_W       = int(MD_CANVAS_W * 0.28)
@@ -1375,11 +1374,31 @@ def run_lineup_generator():
     opp_logo_cache = {}
     generated = 0
 
-    # Match Day assets — loaded once, reused for every row
-    md_background = download_image_by_name(drive, MD_BACKGROUND_NAME)
-    if md_background is None:
-        print('WARNING: Match Day background "%s" not found; MD posts will be skipped.'
-              % MD_BACKGROUND_NAME)
+    # Match Day backgrounds — one per team, loaded on demand & cached
+    MD_BACKGROUND_NAME_FOR_TEAM = {
+        '6A':   '6A Match Day',
+        '6B':   '6B Match Day',
+        '6C':   '6C Match Day',
+        '6D':   '6D Match Day',
+        'VETS': 'VETs Match Day',
+    }
+    md_background_cache = {}
+
+    def get_md_background(team_code):
+        if team_code in md_background_cache:
+            return md_background_cache[team_code]
+        bg_name = MD_BACKGROUND_NAME_FOR_TEAM.get(team_code)
+        if not bg_name:
+            print('  [matchday] no background configured for team "%s"' % team_code)
+            md_background_cache[team_code] = None
+            return None
+        img = download_image_by_name(drive, bg_name)  # extension-insensitive lookup
+        if img is None:
+            print('  [matchday] background "%s" not found for team "%s" - MD post skipped.'
+                  % (bg_name, team_code))
+        md_background_cache[team_code] = img
+        return img
+
     md_logo_files = opp_logo_files  # same Drive folder holds opponent+league+galaksia logos
 
     for tab_ws in team_tabs:
@@ -1498,7 +1517,8 @@ def run_lineup_generator():
                 tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
                 print('%s row %d: picture = %s' % (team, i, chosen_name))
 
-            # ---- MATCH DAY POST (same row data, different player photo) ----
+# ---- MATCH DAY POST (same row data, different player photo) ----
+            md_background = get_md_background(team)
             if md_background is not None:
                 # Recent MD picture names, least-recently-used first (mirrors the
                 # lineup "Picture" recency logic, but reads column COL_MD_PICTURE)
