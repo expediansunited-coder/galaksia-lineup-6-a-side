@@ -520,7 +520,7 @@ def find_player_folder_id(drive, player_name):
             return f['id']
     return None
 
-def get_random_player_photo(drive, player_name):
+def get_random_player_photo(drive, player_name, photo_base='front'):
     """Return a random photo (PIL RGBA, bg removed, cropped) for a player,
     or None if no folder / no usable images."""
     folder_id = find_player_folder_id(drive, player_name)
@@ -532,11 +532,11 @@ def get_random_player_photo(drive, player_name):
         print('    [photo] "%s": folder found but NO IMAGES' % player_name)
         return None
 
-    # Only use the file named "front" (any extension).
+    # Only use the file named `photo_base` (any extension).
     images = [im for im in images
-              if os.path.splitext(im['name'])[0].strip().lower() == 'front']
+              if os.path.splitext(im['name'])[0].strip().lower() == photo_base]
     if not images:
-        print('    [photo] "%s": no "front" image in folder' % player_name)
+        print('    [photo] "%s": no "%s" image in folder' % (player_name, photo_base))
         return None
 
     # Try images in random order; skip any that can't be opened/processed.
@@ -566,7 +566,7 @@ def get_random_player_photo(drive, player_name):
           % (player_name, len(images)))
     return None
 
-def pick_player_with_photo(drive, match_players, recent_names, exclude=None):
+def pick_player_with_photo(drive, match_players, recent_names, exclude=None, photo_base='front'):
     """match_players: ordered list of this match's players (starters+subs).
     recent_names: Picture values from previous rows, least-recently-used first.
     exclude: names that must NOT be picked (e.g. the lineup's chosen player).
@@ -578,14 +578,14 @@ def pick_player_with_photo(drive, match_players, recent_names, exclude=None):
                  if _norm(p) not in recent_norm and _norm(p) not in exclude_norm]
     random.shuffle(preferred)
     for p in preferred:
-        photo = get_random_player_photo(drive, p)
+        photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
 
     for rn in recent_names:
         for p in match_players:
             if _norm(p) == _norm(rn) and _norm(p) not in exclude_norm:
-                photo = get_random_player_photo(drive, p)
+                photo = get_random_player_photo(drive, p, photo_base)
                 if photo is not None:
                     return p, photo
 
@@ -593,7 +593,7 @@ def pick_player_with_photo(drive, match_players, recent_names, exclude=None):
     fallback_pool = [p for p in match_players if _norm(p) not in recent_norm]
     random.shuffle(fallback_pool)
     for p in fallback_pool:
-        photo = get_random_player_photo(drive, p)
+        photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
 
@@ -753,6 +753,7 @@ def display_team_name(name):
     return n
 
 def load_numbers_tab(client, tab_name):
+    """Return list of {name, match, c2, c3list} from a numbers tab, or []."""
     try:
         ws = client.open_by_key(NUMBERS_SHEET_ID).worksheet(tab_name)
     except Exception:
@@ -768,6 +769,7 @@ def load_numbers_tab(client, tab_name):
         match = (row[1] or '').strip() if len(row) > 1 else ''
         c2 = (row[3] or '').strip() if len(row) > 3 else ''    # 2nd choice = column D
         c3raw = (row[4] or '').strip() if len(row) > 4 else ''
+        # 3rd choice may be "15/17/21"
         c3list = [x.strip() for x in re.split(r'[\/,]', c3raw) if x.strip()]
         out.append({'name': name, 'match': match, 'c2': c2, 'c3list': c3list})
     return out
@@ -1447,7 +1449,7 @@ def run_lineup_generator():
             match_players = starters + subs
             number_map = assign_numbers(match_players, numbers_for_team(team))
             chosen_name, player_photo = pick_player_with_photo(
-                drive, match_players, recent_lru_first)
+                drive, match_players, recent_lru_first, photo_base='right')
             if chosen_name is None:
                 print('%s row %d: no player photo available.' % (team, i))
 
