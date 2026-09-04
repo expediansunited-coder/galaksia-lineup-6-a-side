@@ -199,6 +199,31 @@ def load_meta_config():
         return json.load(f)
 
 # ============================================================
+# API RETRY
+# ============================================================
+from gspread.exceptions import APIError
+
+def with_retry(func, *args, retries=6, base_delay=3, **kwargs):
+    """Retry a gspread call on transient errors (429/500/502/503)."""
+    import random as _r
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except APIError as e:
+            code = None
+            try:
+                code = e.response.status_code
+            except Exception:
+                pass
+            transient = code in (429, 500, 502, 503) or code is None
+            if not transient or attempt == retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt) + _r.uniform(0, 1)
+            print('  [retry] API %s - attempt %d/%d, waiting %.1fs'
+                  % (code, attempt + 1, retries, delay))
+            time.sleep(delay)
+
+# ============================================================
 # DRIVE HELPERS
 # ============================================================
 def find_file_in_folder(drive, name):
@@ -432,13 +457,13 @@ def fit_font_width(font_path, text, max_w, start_size, min_size=20):
 def find_opponent(client, team, match_date):
     """Search both fixtures tabs for team+date; return
     (opponent, match_type, kickoff_time, location) or (None, None, None, None)."""
-    ss = client.open_by_key(INDEX_SHEET_ID)
+    ss = with_retry(client.open_by_key, INDEX_SHEET_ID)
     for tab in (FIXTURES_FRIENDLY_TAB, FIXTURES_LEAGUECUP_TAB):
         try:
             ws = ss.worksheet(tab)
         except Exception:
             continue
-        data = ws.get_all_values()
+        data = with_retry(ws.get_all_values)
         for row in data[1:]:
             if len(row) <= FIX_COL_MTYPE:
                 continue
@@ -755,10 +780,10 @@ def display_team_name(name):
 def load_numbers_tab(client, tab_name):
     """Return list of {name, match, c2, c3list} from a numbers tab, or []."""
     try:
-        ws = client.open_by_key(NUMBERS_SHEET_ID).worksheet(tab_name)
+        ws = with_retry(client.open_by_key, NUMBERS_SHEET_ID).worksheet(tab_name)
     except Exception:
         return []
-    data = ws.get_all_values()
+    data = with_retry(ws.get_all_values)
     out = []
     for row in data[1:]:
         if len(row) < 2:
@@ -858,8 +883,9 @@ def split_names(cell):
     return [n.strip() for n in cell.split(',') if n.strip()]
 
 def build_team_league_map(client):
-    ws = client.open_by_key(INDEX_SHEET_ID).worksheet(INDEX_TAB)
-    data = ws.get_all_values()
+    ss = with_retry(client.open_by_key, INDEX_SHEET_ID)
+    ws = ss.worksheet(INDEX_TAB)
+    data = with_retry(ws.get_all_values)
     mapping = {}
     for row in data[1:]:
         if len(row) <= max(IDX_COL_TEAM, IDX_COL_LEAGUE):
@@ -1234,7 +1260,7 @@ def run_lineup_generator():
     errors = []
     today = datetime.now().date()
     date_str = today.strftime('%Y-%m-%d')
-    ss_lineups = client.open_by_key(LINEUPS_SHEET_ID)
+    ss_lineups = with_retry(client.open_by_key, LINEUPS_SHEET_ID)
     team_tabs = [w for w in ss_lineups.worksheets()
                  if w.title.strip().upper() in OUR_TEAMS]
 
@@ -1275,7 +1301,7 @@ def run_lineup_generator():
         pending_matches = []  # each: dict with team, row_idx, tab_ws, kickoff_txt, safe_team
         for tab_ws in team_tabs:
             team = tab_ws.title.strip().upper()
-            data = tab_ws.get_all_values()
+            data = with_retry(tab_ws.get_all_values)
             if len(data) <= 1:
                 continue
             for i, row in enumerate(data[1:], start=2):
