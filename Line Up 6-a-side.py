@@ -412,34 +412,105 @@ def find_logo_file(logo_files, sheet_name):
     return None
 
 def remove_edge_background(img, tol=40):
+    """
+    Removes only the background that is actually connected to the image edges.
+    Any color matching the background but fully enclosed inside the logo
+    (i.e. not reachable from the outside) is left completely untouched —
+    even if it's the exact same white/color as the background.
+    """
     img = img.convert('RGBA')
     w, h = img.size
     px = img.load()
+
+    # 1. Detect background color from the corners
     corners = [px[0, 0], px[w-1, 0], px[0, h-1], px[w-1, h-1]]
-    br = sum(c[0] for c in corners) // 4
-    bg = sum(c[1] for c in corners) // 4
-    bb = sum(c[2] for c in corners) // 4
-    def close(c):
-        return abs(c[0]-br) <= tol and abs(c[1]-bg) <= tol and abs(c[2]-bb) <= tol
+    bg_r = sum(c[0] for c in corners) // 4
+    bg_g = sum(c[1] for c in corners) // 4
+    bg_b = sum(c[2] for c in corners) // 4
+
+    # 2. Build a STRICT barrier mask (tight tolerance) so anti-aliased
+    #    outlines can't be "leaked through" by the flood fill.
+    tight_tol = 15
+    mask = bytearray(w * h)  # 0 = background-like, 1 = solid/logo pixel
+    for y in range(h):
+        for x in range(w):
+            idx = y * w + x
+            c = px[x, y]
+            if c[3] == 0:
+                mask[idx] = 0
+                continue
+            dist = abs(c[0] - bg_r) + abs(c[1] - bg_g) + abs(c[2] - bg_b)
+            mask[idx] = 0 if dist < tight_tol else 1
+
+    # 3. Flood fill ONLY from the four edges, through background-like pixels.
+    #    Anything not reached stays exactly as-is, no matter its color.
     from collections import deque
-    visited = bytearray(w * h)
     dq = deque()
+    visited = bytearray(w * h)
+
     for x in range(w):
-        for yy in (0, h-1): dq.append((x, yy))
-    for yy in range(h):
-        for x in (0, w-1): dq.append((x, yy))
+        for y in (0, h - 1):
+            idx = y * w + x
+            if mask[idx] == 0 and not visited[idx]:
+                dq.append((x, y)); visited[idx] = 1
+    for y in range(h):
+        for x in (0, w - 1):
+            idx = y * w + x
+            if mask[idx] == 0 and not visited[idx]:
+                dq.append((x, y)); visited[idx] = 1
+
+    outside = bytearray(w * h)  # 1 = confirmed reachable background
     while dq:
-        x, yy = dq.popleft()
-        idx = yy * w + x
-        if visited[idx]: continue
-        visited[idx] = 1
-        c = px[x, yy]
-        if c[3] == 0 or close(c):
-            px[x, yy] = (c[0], c[1], c[2], 0)
-            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
-                nx, ny = x+dx, yy+dy
-                if 0 <= nx < w and 0 <= ny < h and not visited[ny*w+nx]:
+        x, y = dq.popleft()
+        idx = y * w + x
+        outside[idx] = 1
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny < h:
+                nidx = ny * w + nx
+                if not visited[nidx] and mask[nidx] == 0:
+                    visited[nidx] = 1
                     dq.append((nx, ny))
+
+    # 4. Build the new alpha channel.
+    #    - outside==1  -> reachable background -> erase (with soft fringe fade)
+    #    - everything else (even background-colored) -> keep fully as-is
+    new_alpha = bytearray(w * h)
+    for y in range(h):
+        for x in range(w):
+            idx = y * w + x
+            c = px[x, y]
+            if c[3] == 0:
+                new_alpha[idx] = 0
+                continue
+
+            if outside[idx]:
+                new_alpha[idx] = 0
+                continue
+
+            # Check if this pixel is a fringe pixel directly touching
+            # confirmed outside background -> smooth-fade using wider tol,
+            # so we don't leave a hard white/gray halo ring.
+            is_fringe = False
+            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and outside[ny * w + nx]:
+                    is_fringe = True
+                    break
+
+            if is_fringe:
+                dist = abs(c[0] - bg_r) + abs(c[1] - bg_g) + abs(c[2] - bg_b)
+                if dist >= tol:
+                    new_alpha[idx] = c[3]
+                else:
+                    new_alpha[idx] = int(c[3] * (dist / tol))
+            else:
+                # Not reachable from outside -> part of the logo, untouched
+                new_alpha[idx] = c[3]
+
+    alpha_img = Image.frombytes('L', (w, h), bytes(new_alpha))
+    img.putalpha(alpha_img)
+
     cb = img.getbbox()
     return img.crop(cb) if cb else img
 
