@@ -109,7 +109,7 @@ PLAYER_BOX_W = 1200          # width of player area
 PLAYER_BOX_TOP = 1200        # top of player area
 PLAYER_BOX_BOTTOM = 3200     # bottom (feet near here)
 
-RECENT_ROWS = 13
+RECENT_ROWS = 6
 COL_PICTURE = 8              # I  player used for the picture
 
 # --- Output & canvas ---
