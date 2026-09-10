@@ -430,7 +430,7 @@ def remove_edge_background(img, tol=40):
 
     # 2. Build a STRICT barrier mask (tight tolerance) so anti-aliased
     #    outlines can't be "leaked through" by the flood fill.
-    tight_tol = 15
+    tight_tol = tol
     mask = bytearray(w * h)  # 0 = background-like, 1 = solid/logo pixel
     for y in range(h):
         for x in range(w):
@@ -1087,7 +1087,7 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
         draw.text((CANVAS_W - LOGO_RIGHT_MARGIN - lw, fr_y + (fb[3]-fb[1]) + 24),
                   label_text, font=label_font, fill=WHITE)
     elif logo_img is not None:
-        logo = logo_img.copy()
+        logo = remove_edge_background(logo_img.copy(), tol=60)
         logo.thumbnail((LOGO_MAX_W, LOGO_MAX_H), Image.LANCZOS)
         logo_x = CANVAS_W - LOGO_RIGHT_MARGIN - logo.width
         logo_y = LOGO_TOP_MARGIN
@@ -1253,9 +1253,7 @@ def build_matchday_image(home_team, away_team, match_type, league,
         ll = find_logo_file(logo_files, league)
         if ll:
             ll_img = Image.open(io.BytesIO(download_file_bytes(drive, ll['id']))).convert('RGBA')
-            cb = ll_img.getbbox()
-            if cb:
-                ll_img = ll_img.crop(cb)
+            ll_img = remove_edge_background(ll_img, tol=60)
             scale = MD_LEAGUE_LOGO_MAX / max(ll_img.width, ll_img.height)
             ll_img = ll_img.resize((max(1, int(ll_img.width * scale)),
                                     max(1, int(ll_img.height * scale))), Image.LANCZOS)
