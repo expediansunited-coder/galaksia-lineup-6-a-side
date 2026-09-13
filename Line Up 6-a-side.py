@@ -1087,7 +1087,8 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
         draw.text((CANVAS_W - LOGO_RIGHT_MARGIN - lw, fr_y + (fb[3]-fb[1]) + 24),
                   label_text, font=label_font, fill=WHITE)
     elif logo_img is not None:
-        logo = remove_edge_background(logo_img.copy(), tol=60)
+        # Do NOT remove background for league logos such as PKFL / PSMF
+        logo = logo_img.copy().convert('RGBA')
         logo.thumbnail((LOGO_MAX_W, LOGO_MAX_H), Image.LANCZOS)
         logo_x = CANVAS_W - LOGO_RIGHT_MARGIN - logo.width
         logo_y = LOGO_TOP_MARGIN
@@ -1253,7 +1254,7 @@ def build_matchday_image(home_team, away_team, match_type, league,
         ll = find_logo_file(logo_files, league)
         if ll:
             ll_img = Image.open(io.BytesIO(download_file_bytes(drive, ll['id']))).convert('RGBA')
-            ll_img = remove_edge_background(ll_img, tol=60)
+            # Do NOT remove background for PKFL / PSMF league logos
             scale = MD_LEAGUE_LOGO_MAX / max(ll_img.width, ll_img.height)
             ll_img = ll_img.resize((max(1, int(ll_img.width * scale)),
                                     max(1, int(ll_img.height * scale))), Image.LANCZOS)
