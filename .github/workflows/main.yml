@@ -2,7 +2,7 @@ name: Line-up Generator
 
 on:
   schedule:
-    - cron: '0 5 * * *'   # ~07:00 Prague summer / 06:00 winter
+    - cron: '17 5 * * *'   # ~07:00 Prague summer / 06:00 winter
   workflow_dispatch:
 
 permissions:
