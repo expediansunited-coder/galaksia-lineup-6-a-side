@@ -411,70 +411,65 @@ def find_logo_file(logo_files, sheet_name):
             return f
     return None
 
-def remove_edge_background(img, tol=40):
+def remove_edge_background(img, tol=75):
     """
-    Removes only the background that is actually connected to the image edges.
-    Any color matching the background but fully enclosed inside the logo
-    (i.e. not reachable from the outside) is left completely untouched —
-    even if it's the exact same white/color as the background.
-    """
-    img = img.convert('RGBA')def remove_edge_background(img, tol=75):
-    """
-    Remove only background pixels connected to the image edges.
-
-    This preserves internal logo colours, including white or background-coloured
-    areas inside the logo, because only edge-reachable background is removed.
+    Removes only background pixels connected to the image edges.
+    Internal logo colours are preserved, even if they match the background colour.
     """
     img = img.convert('RGBA')
     w, h = img.size
     px = img.load()
 
-    # Collect many edge colours instead of relying only on the 4 corners.
-    # This works better when the background is slightly uneven/compressed.
-    edge_samples = []
+    edge_pixels = []
 
     for x in range(w):
-        edge_samples.append(px[x, 0])
-        edge_samples.append(px[x, h - 1])
+        edge_pixels.append(px[x, 0])
+        edge_pixels.append(px[x, h - 1])
 
     for y in range(h):
-        edge_samples.append(px[0, y])
-        edge_samples.append(px[w - 1, y])
+        edge_pixels.append(px[0, y])
+        edge_pixels.append(px[w - 1, y])
 
-    # Keep only visible edge pixels as possible background colours.
-    edge_samples = [c for c in edge_samples if c[3] > 0]
+    edge_pixels = [c for c in edge_pixels if c[3] > 10]
 
-    if not edge_samples:
+    if not edge_pixels:
         return img
 
-    # Reduce samples for speed if needed.
-    if len(edge_samples) > 400:
-        step = max(1, len(edge_samples) // 400)
-        edge_samples = edge_samples[::step]
+    from collections import Counter, deque
 
-    def dist_to_edge_bg(c):
-        return min(
-            abs(c[0] - e[0]) + abs(c[1] - e[1]) + abs(c[2] - e[2])
-            for e in edge_samples
+    def quantize(c):
+        return (
+            int(round(c[0] / 16) * 16),
+            int(round(c[1] / 16) * 16),
+            int(round(c[2] / 16) * 16)
         )
 
-    # 0 = background-like, 1 = logo/solid
+    counts = Counter(quantize(c) for c in edge_pixels)
+
+    min_count = max(3, int(len(edge_pixels) * 0.03))
+    bg_colours = [rgb for rgb, count in counts.most_common(6) if count >= min_count]
+
+    if not bg_colours:
+        bg_colours = [counts.most_common(1)[0][0]]
+
+    def is_background_like(c):
+        if c[3] <= 10:
+            return True
+
+        for bg in bg_colours:
+            dist = abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2])
+            if dist <= tol:
+                return True
+
+        return False
+
     mask = bytearray(w * h)
 
     for y in range(h):
         for x in range(w):
             idx = y * w + x
             c = px[x, y]
-
-            if c[3] == 0:
-                mask[idx] = 0
-                continue
-
-            mask[idx] = 0 if dist_to_edge_bg(c) <= tol else 1
-
-    # Flood fill only from the image edges through background-like pixels.
-    # This is what protects internal logo colours.
-    from collections import deque
+            mask[idx] = 0 if is_background_like(c) else 1
 
     dq = deque()
     visited = bytearray(w * h)
@@ -502,14 +497,14 @@ def remove_edge_background(img, tol=40):
 
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nx, ny = x + dx, y + dy
+
             if 0 <= nx < w and 0 <= ny < h:
                 nidx = ny * w + nx
+
                 if not visited[nidx] and mask[nidx] == 0:
                     visited[nidx] = 1
                     dq.append((nx, ny))
 
-    # Build new alpha.
-    # Remove only outside background. Keep everything else unchanged.
     new_alpha = bytearray(w * h)
 
     for y in range(h):
@@ -517,7 +512,7 @@ def remove_edge_background(img, tol=40):
             idx = y * w + x
             c = px[x, y]
 
-            if c[3] == 0:
+            if c[3] <= 10:
                 new_alpha[idx] = 0
             elif outside[idx]:
                 new_alpha[idx] = 0
@@ -1628,11 +1623,11 @@ def run_lineup_generator():
 
             # Record the chosen player's name now (so it's saved even in generate step)
             if chosen_name:
-            tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-            while len(data[i - 1]) <= COL_PICTURE:
-                data[i - 1].append('')
-            data[i - 1][COL_PICTURE] = chosen_name
-            print('%s row %d: picture = %s' % (team, i, chosen_name))
+                tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+                while len(data[i - 1]) <= COL_PICTURE:
+                    data[i - 1].append('')
+                data[i - 1][COL_PICTURE] = chosen_name
+                print('%s row %d: picture = %s' % (team, i, chosen_name))
 
 # ---- MATCH DAY POST (same row data, different player photo) ----
             md_background = get_md_background(team)
@@ -1674,11 +1669,11 @@ def run_lineup_generator():
                     make_story_version(md_out_path)
 
                     if md_chosen_name:
-                    tab_ws.update_cell(i, COL_MD_PICTURE + 1, md_chosen_name)
-                    while len(data[i - 1]) <= COL_MD_PICTURE:
-                        data[i - 1].append('')
-                    data[i - 1][COL_MD_PICTURE] = md_chosen_name
-                    print('%s row %d: MD picture = %s' % (team, i, md_chosen_name))
+                        tab_ws.update_cell(i, COL_MD_PICTURE + 1, md_chosen_name)
+                        while len(data[i - 1]) <= COL_MD_PICTURE:
+                            data[i - 1].append('')
+                        data[i - 1][COL_MD_PICTURE] = md_chosen_name
+                        print('%s row %d: MD picture = %s' % (team, i, md_chosen_name))
                 except Exception as e:
                     print('%s row %d: match day image build failed: %s' % (team, i, e))
 
