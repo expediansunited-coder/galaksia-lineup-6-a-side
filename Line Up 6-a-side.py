@@ -411,7 +411,7 @@ def find_logo_file(logo_files, sheet_name):
             return f
     return None
 
-def remove_edge_background(img, tol=80):
+def remove_edge_background(img, tol=77):
     """
     Removes only background pixels connected to the image edges.
     Internal logo colours are preserved, even if they match the background colour.
