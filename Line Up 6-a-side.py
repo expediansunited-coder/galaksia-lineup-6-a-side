@@ -418,33 +418,64 @@ def remove_edge_background(img, tol=40):
     (i.e. not reachable from the outside) is left completely untouched —
     even if it's the exact same white/color as the background.
     """
+    img = img.convert('RGBA')def remove_edge_background(img, tol=75):
+    """
+    Remove only background pixels connected to the image edges.
+
+    This preserves internal logo colours, including white or background-coloured
+    areas inside the logo, because only edge-reachable background is removed.
+    """
     img = img.convert('RGBA')
     w, h = img.size
     px = img.load()
 
-    # 1. Detect background color from the corners
-    corners = [px[0, 0], px[w-1, 0], px[0, h-1], px[w-1, h-1]]
-    bg_r = sum(c[0] for c in corners) // 4
-    bg_g = sum(c[1] for c in corners) // 4
-    bg_b = sum(c[2] for c in corners) // 4
+    # Collect many edge colours instead of relying only on the 4 corners.
+    # This works better when the background is slightly uneven/compressed.
+    edge_samples = []
 
-    # 2. Build a STRICT barrier mask (tight tolerance) so anti-aliased
-    #    outlines can't be "leaked through" by the flood fill.
-    tight_tol = tol
-    mask = bytearray(w * h)  # 0 = background-like, 1 = solid/logo pixel
+    for x in range(w):
+        edge_samples.append(px[x, 0])
+        edge_samples.append(px[x, h - 1])
+
+    for y in range(h):
+        edge_samples.append(px[0, y])
+        edge_samples.append(px[w - 1, y])
+
+    # Keep only visible edge pixels as possible background colours.
+    edge_samples = [c for c in edge_samples if c[3] > 0]
+
+    if not edge_samples:
+        return img
+
+    # Reduce samples for speed if needed.
+    if len(edge_samples) > 400:
+        step = max(1, len(edge_samples) // 400)
+        edge_samples = edge_samples[::step]
+
+    def dist_to_edge_bg(c):
+        return min(
+            abs(c[0] - e[0]) + abs(c[1] - e[1]) + abs(c[2] - e[2])
+            for e in edge_samples
+        )
+
+    # 0 = background-like, 1 = logo/solid
+    mask = bytearray(w * h)
+
     for y in range(h):
         for x in range(w):
             idx = y * w + x
             c = px[x, y]
+
             if c[3] == 0:
                 mask[idx] = 0
                 continue
-            dist = abs(c[0] - bg_r) + abs(c[1] - bg_g) + abs(c[2] - bg_b)
-            mask[idx] = 0 if dist < tight_tol else 1
 
-    # 3. Flood fill ONLY from the four edges, through background-like pixels.
-    #    Anything not reached stays exactly as-is, no matter its color.
+            mask[idx] = 0 if dist_to_edge_bg(c) <= tol else 1
+
+    # Flood fill only from the image edges through background-like pixels.
+    # This is what protects internal logo colours.
     from collections import deque
+
     dq = deque()
     visited = bytearray(w * h)
 
@@ -452,18 +483,23 @@ def remove_edge_background(img, tol=40):
         for y in (0, h - 1):
             idx = y * w + x
             if mask[idx] == 0 and not visited[idx]:
-                dq.append((x, y)); visited[idx] = 1
+                visited[idx] = 1
+                dq.append((x, y))
+
     for y in range(h):
         for x in (0, w - 1):
             idx = y * w + x
             if mask[idx] == 0 and not visited[idx]:
-                dq.append((x, y)); visited[idx] = 1
+                visited[idx] = 1
+                dq.append((x, y))
 
-    outside = bytearray(w * h)  # 1 = confirmed reachable background
+    outside = bytearray(w * h)
+
     while dq:
         x, y = dq.popleft()
         idx = y * w + x
         outside[idx] = 1
+
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nx, ny = x + dx, y + dy
             if 0 <= nx < w and 0 <= ny < h:
@@ -472,40 +508,20 @@ def remove_edge_background(img, tol=40):
                     visited[nidx] = 1
                     dq.append((nx, ny))
 
-    # 4. Build the new alpha channel.
-    #    - outside==1  -> reachable background -> erase (with soft fringe fade)
-    #    - everything else (even background-colored) -> keep fully as-is
+    # Build new alpha.
+    # Remove only outside background. Keep everything else unchanged.
     new_alpha = bytearray(w * h)
+
     for y in range(h):
         for x in range(w):
             idx = y * w + x
             c = px[x, y]
+
             if c[3] == 0:
                 new_alpha[idx] = 0
-                continue
-
-            if outside[idx]:
+            elif outside[idx]:
                 new_alpha[idx] = 0
-                continue
-
-            # Check if this pixel is a fringe pixel directly touching
-            # confirmed outside background -> smooth-fade using wider tol,
-            # so we don't leave a hard white/gray halo ring.
-            is_fringe = False
-            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h and outside[ny * w + nx]:
-                    is_fringe = True
-                    break
-
-            if is_fringe:
-                dist = abs(c[0] - bg_r) + abs(c[1] - bg_g) + abs(c[2] - bg_b)
-                if dist >= tol:
-                    new_alpha[idx] = c[3]
-                else:
-                    new_alpha[idx] = int(c[3] * (dist / tol))
             else:
-                # Not reachable from outside -> part of the logo, untouched
                 new_alpha[idx] = c[3]
 
     alpha_img = Image.frombytes('L', (w, h), bytes(new_alpha))
@@ -1531,15 +1547,15 @@ def run_lineup_generator():
             logo_img = logo_cache.get(league)
 
             recent_names = []
-            for r in range(i - 2, 0, -1):
-                prev = data[r - 1]
+            for idx in range(i - 2, 0, -1):
+                prev = data[idx]
                 if len(prev) <= COL_PICTURE:
                     continue
                 pic = (prev[COL_PICTURE] or '').strip()
-                recent_names.append(pic)
+                if pic:
+                    recent_names.append(pic)
                 if len(recent_names) >= RECENT_ROWS:
                     break
-            recent_names = [n for n in recent_names if n]
             recent_lru_first = list(reversed(recent_names))
 
             match_players = starters + subs
@@ -1612,8 +1628,11 @@ def run_lineup_generator():
 
             # Record the chosen player's name now (so it's saved even in generate step)
             if chosen_name:
-                tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
-                print('%s row %d: picture = %s' % (team, i, chosen_name))
+            tab_ws.update_cell(i, COL_PICTURE + 1, chosen_name)
+            while len(data[i - 1]) <= COL_PICTURE:
+                data[i - 1].append('')
+            data[i - 1][COL_PICTURE] = chosen_name
+            print('%s row %d: picture = %s' % (team, i, chosen_name))
 
 # ---- MATCH DAY POST (same row data, different player photo) ----
             md_background = get_md_background(team)
@@ -1621,15 +1640,15 @@ def run_lineup_generator():
                 # Recent MD picture names, least-recently-used first (mirrors the
                 # lineup "Picture" recency logic, but reads column COL_MD_PICTURE)
                 recent_md_names = []
-                for r in range(i - 2, 0, -1):
-                    prev = data[r - 1]
+                for idx in range(i - 2, 0, -1):
+                    prev = data[idx]
                     if len(prev) <= COL_MD_PICTURE:
                         continue
                     pic = (prev[COL_MD_PICTURE] or '').strip()
-                    recent_md_names.append(pic)
+                    if pic:
+                        recent_md_names.append(pic)
                     if len(recent_md_names) >= RECENT_ROWS:
                         break
-                recent_md_names = [n for n in recent_md_names if n]
                 recent_md_lru_first = list(reversed(recent_md_names))
 
                 md_exclude = [chosen_name] if chosen_name else []
@@ -1655,8 +1674,11 @@ def run_lineup_generator():
                     make_story_version(md_out_path)
 
                     if md_chosen_name:
-                        tab_ws.update_cell(i, COL_MD_PICTURE + 1, md_chosen_name)
-                        print('%s row %d: MD picture = %s' % (team, i, md_chosen_name))
+                    tab_ws.update_cell(i, COL_MD_PICTURE + 1, md_chosen_name)
+                    while len(data[i - 1]) <= COL_MD_PICTURE:
+                        data[i - 1].append('')
+                    data[i - 1][COL_MD_PICTURE] = md_chosen_name
+                    print('%s row %d: MD picture = %s' % (team, i, md_chosen_name))
                 except Exception as e:
                     print('%s row %d: match day image build failed: %s' % (team, i, e))
 
