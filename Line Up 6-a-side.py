@@ -1065,21 +1065,63 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
     span_center = (DIVIDER_TOP_Y + DIVIDER_BOTTOM_Y) / 2
     y = span_center - total_h / 2
 
+    # Text must stay inside the left half:
+    # left limit = canvas left edge, right limit = middle divider.
+    LEFT_TEXT_MIN_X = LEFT_EDGE
+    LEFT_TEXT_MAX_X = CENTER_X
+    LEFT_TEXT_MAX_W = LEFT_TEXT_MAX_X - LEFT_TEXT_MIN_X
+
+    def fit_single_player_line(text, base_font, min_size=24):
+        """
+        Fit one player/coach line into the left half.
+        Only this specific line's font is reduced if needed.
+        Titles are not affected.
+        """
+        try:
+            size = int(base_font.size)
+        except Exception:
+            size = STARTER_SIZE
+
+        while size >= min_size:
+            f = load_font(font_path, size)
+            b = draw.textbbox((0, 0), text, font=f)
+            w = b[2] - b[0]
+            if w <= LEFT_TEXT_MAX_W:
+                return f
+            size -= 2
+
+        return load_font(font_path, min_size)
+
     for (text, font, is_title), h in zip(items, heights):
         if text == '__GAP__':
             y += h
             continue
-        bbox = draw.textbbox((0, 0), text, font=font)
+
+        draw_font = font
+
+        # Only shrink player/coach names, not section titles.
+        if not is_title:
+            draw_font = fit_single_player_line(text, font)
+
+        bbox = draw.textbbox((0, 0), text, font=draw_font)
         w = bbox[2] - bbox[0]
+
+        # Center in the left half, then clamp just in case.
         x = block_cx - w / 2
+        if x < LEFT_TEXT_MIN_X:
+            x = LEFT_TEXT_MIN_X
+        if x + w > LEFT_TEXT_MAX_X:
+            x = LEFT_TEXT_MAX_X - w
+
         if is_title:
-            draw.text((x, y), text, font=font, fill=WHITE,
+            draw.text((x, y), text, font=draw_font, fill=WHITE,
                       stroke_width=TITLE_STROKE, stroke_fill=WHITE)
-            ub = draw.textbbox((x, y), text, font=font)
+            ub = draw.textbbox((x, y), text, font=draw_font)
             line_y = ub[3] + 12
             draw.line([(ub[0], line_y), (ub[2], line_y)], fill=WHITE, width=6)
         else:
-            draw.text((x, y), text, font=font, fill=WHITE)
+            draw.text((x, y), text, font=draw_font, fill=WHITE)
+
         y += h
 
     # --- Top-right: league logo (or "FRIENDLY") + team label ---
