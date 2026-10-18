@@ -1206,12 +1206,22 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
             cb = lg.getbbox()
             if cb:
                 lg = lg.crop(cb)
-            # Scale so the logo height spans OPP_LOGO_TOP..OPP_LOGO_BOTTOM
             target_h = OPP_LOGO_BOTTOM - OPP_LOGO_TOP
-            scale = target_h / lg.height
+
+            scale = min(
+                target_h / lg.height,
+                OPP_LOGO_MAX / lg.width
+            )
+            
             new_w = max(1, int(lg.width * scale))
-            lg = lg.resize((new_w, target_h), Image.LANCZOS)
-            bg.alpha_composite(lg, (int(OPP_BLOCK_CX - lg.width / 2), OPP_LOGO_TOP))
+            new_h = max(1, int(lg.height * scale))
+            
+            lg = lg.resize((new_w, new_h), Image.LANCZOS)
+            
+            x = int(OPP_BLOCK_CX - lg.width / 2)
+            y = int(OPP_LOGO_TOP + (target_h - lg.height) / 2)
+            
+            bg.alpha_composite(lg, (x, y))
 
         name_font = load_font(font_path, OPP_NAME_SIZE)
         nb = draw.textbbox((0, 0), opp_name.upper(), font=name_font)
