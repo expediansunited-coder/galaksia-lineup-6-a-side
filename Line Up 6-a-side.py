@@ -17,9 +17,7 @@ import random
 import json
 import time
 import requests
-import torch
-from torchvision import transforms
-from transformers import AutoModelForImageSegmentation
+from rembg import remove
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -413,91 +411,119 @@ def find_logo_file(logo_files, sheet_name):
             return f
     return None
 
-def remove_edge_background(img, tol=22):
-    import cv2
-    import numpy as np
-
+def remove_edge_background(img, tol=77):
+    """
+    Removes only background pixels connected to the image edges.
+    Internal logo colours are preserved, even if they match the background colour.
+    """
     img = img.convert('RGBA')
-    rgba = np.array(img, dtype=np.uint8)
+    w, h = img.size
+    px = img.load()
 
-    h, w = rgba.shape[:2]
-    rgb = rgba[:, :, :3]
-    alpha = rgba[:, :, 3]
-
-    edge_mask = np.zeros((h, w), dtype=bool)
-    edge_mask[0, :] = True
-    edge_mask[h - 1, :] = True
-    edge_mask[:, 0] = True
-    edge_mask[:, w - 1] = True
-
-    valid_edge = edge_mask & (alpha > 10)
-    if not np.any(valid_edge):
-        return img
-
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-    samples = lab[valid_edge].reshape(-1, 3).astype(np.float32)
-
-    if len(samples) < 10:
-        centers = np.array([np.median(samples, axis=0)], dtype=np.float32)
-    else:
-        k = min(4, len(samples))
-        criteria = (
-            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-            30,
-            0.5
-        )
-        _, labels, centers = cv2.kmeans(
-            samples,
-            k,
-            None,
-            criteria,
-            3,
-            cv2.KMEANS_PP_CENTERS
-        )
-
-        counts = np.bincount(labels.flatten(), minlength=k)
-        min_count = max(5, int(len(samples) * 0.03))
-        keep = counts >= min_count
-
-        if np.any(keep):
-            centers = centers[keep]
-        else:
-            centers = centers[[int(np.argmax(counts))]]
-
-    dist_stack = []
-    for c in centers:
-        d = np.sqrt(np.sum((lab - c) ** 2, axis=2))
-        dist_stack.append(d)
-
-    dist = np.min(np.stack(dist_stack, axis=0), axis=0)
-
-    bg_like = (dist <= tol) | (alpha <= 10)
-
-    flood = (bg_like.astype(np.uint8) * 255)
-    ff_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    edge_pixels = []
 
     for x in range(w):
-        if flood[0, x] == 255:
-            cv2.floodFill(flood, ff_mask, (x, 0), 128)
-        if flood[h - 1, x] == 255:
-            cv2.floodFill(flood, ff_mask, (x, h - 1), 128)
+        edge_pixels.append(px[x, 0])
+        edge_pixels.append(px[x, h - 1])
 
     for y in range(h):
-        if flood[y, 0] == 255:
-            cv2.floodFill(flood, ff_mask, (0, y), 128)
-        if flood[y, w - 1] == 255:
-            cv2.floodFill(flood, ff_mask, (w - 1, y), 128)
+        edge_pixels.append(px[0, y])
+        edge_pixels.append(px[w - 1, y])
 
-    outside = flood == 128
+    edge_pixels = [c for c in edge_pixels if c[3] > 10]
 
-    new_alpha = alpha.copy()
-    new_alpha[outside] = 0
+    if not edge_pixels:
+        return img
 
-    rgba[:, :, 3] = new_alpha
+    from collections import Counter, deque
 
-    out = Image.fromarray(rgba, 'RGBA')
-    cb = out.getbbox()
-    return out.crop(cb) if cb else out
+    def quantize(c):
+        return (
+            int(round(c[0] / 16) * 16),
+            int(round(c[1] / 16) * 16),
+            int(round(c[2] / 16) * 16)
+        )
+
+    counts = Counter(quantize(c) for c in edge_pixels)
+
+    min_count = max(3, int(len(edge_pixels) * 0.03))
+    bg_colours = [rgb for rgb, count in counts.most_common(6) if count >= min_count]
+
+    if not bg_colours:
+        bg_colours = [counts.most_common(1)[0][0]]
+
+    def is_background_like(c):
+        if c[3] <= 10:
+            return True
+
+        for bg in bg_colours:
+            dist = abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2])
+            if dist <= tol:
+                return True
+
+        return False
+
+    mask = bytearray(w * h)
+
+    for y in range(h):
+        for x in range(w):
+            idx = y * w + x
+            c = px[x, y]
+            mask[idx] = 0 if is_background_like(c) else 1
+
+    dq = deque()
+    visited = bytearray(w * h)
+
+    for x in range(w):
+        for y in (0, h - 1):
+            idx = y * w + x
+            if mask[idx] == 0 and not visited[idx]:
+                visited[idx] = 1
+                dq.append((x, y))
+
+    for y in range(h):
+        for x in (0, w - 1):
+            idx = y * w + x
+            if mask[idx] == 0 and not visited[idx]:
+                visited[idx] = 1
+                dq.append((x, y))
+
+    outside = bytearray(w * h)
+
+    while dq:
+        x, y = dq.popleft()
+        idx = y * w + x
+        outside[idx] = 1
+
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+
+            if 0 <= nx < w and 0 <= ny < h:
+                nidx = ny * w + nx
+
+                if not visited[nidx] and mask[nidx] == 0:
+                    visited[nidx] = 1
+                    dq.append((nx, ny))
+
+    new_alpha = bytearray(w * h)
+
+    for y in range(h):
+        for x in range(w):
+            idx = y * w + x
+            c = px[x, y]
+
+            if c[3] <= 10:
+                new_alpha[idx] = 0
+            elif outside[idx]:
+                new_alpha[idx] = 0
+            else:
+                new_alpha[idx] = c[3]
+
+    alpha_img = Image.frombytes('L', (w, h), bytes(new_alpha))
+    img.putalpha(alpha_img)
+
+    cb = img.getbbox()
+    return img.crop(cb) if cb else img
 
 def fit_font_width(font_path, text, max_w, start_size, min_size=20):
     tmp = ImageDraw.Draw(Image.new('RGBA', (10, 10)))
@@ -601,97 +627,88 @@ def find_player_folder_id(drive, player_name):
             return f['id']
     return None
 
-# ============================================================
-# BIREFNET BACKGROUND REMOVAL FOR PLAYER PHOTOS
-# ============================================================
-BIR_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-_BIR_MODEL = None
+def get_random_player_photo(drive, player_name, photo_base='front'):
+    """Return a random photo (PIL RGBA, bg removed, cropped) for a player,
+    or None if no folder / no usable images."""
+    folder_id = find_player_folder_id(drive, player_name)
+    if not folder_id:
+        print('    [photo] "%s": NO FOLDER matched' % player_name)
+        return None
+    images = list_images_in_folder(drive, folder_id)
+    if not images:
+        print('    [photo] "%s": folder found but NO IMAGES' % player_name)
+        return None
 
-_BIR_TRANSFORM = transforms.Compose([
-    transforms.Resize((1024, 1024)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        [0.485, 0.456, 0.406],
-        [0.229, 0.224, 0.225]
-    )
-])
+    # Only use the file named `photo_base` (any extension).
+    images = [im for im in images
+              if os.path.splitext(im['name'])[0].strip().lower() == photo_base]
+    if not images:
+        print('    [photo] "%s": no "%s" image in folder' % (player_name, photo_base))
+        return None
 
+    # Try images in random order; skip any that can't be opened/processed.
+    candidates = images[:]
+    random.shuffle(candidates)
+    for choice in candidates:
+        try:
+            data = download_file_bytes(drive, choice['id'])
+            # Verify it's a real raster image before bg-removal
+            Image.open(io.BytesIO(data)).verify()
+            cut = remove(data)  # bytes in -> PNG bytes out (bg removed)
+            img = Image.open(io.BytesIO(cut)).convert('RGBA')
+            img = crop_to_content(img)
+            # Keep only the top 5/8 of the height (chop bottom 3/8)
+            w, h = img.size
+            img = img.crop((0, 0, w, int(h * 5 / 8)))
+            img, content_bbox = add_white_glow(img, radius=8, layers=1, expand=1)
+            img.info['content_bbox'] = content_bbox
+            print('    [photo] "%s": used %s' % (player_name, choice['name']))
+            return img
+        except Exception as e:
+            print('    [photo] "%s": skip %s (%s)'
+                  % (player_name, choice.get('name', '?'), e))
+            continue
 
-def get_birefnet_model():
-    global _BIR_MODEL
-
-    if _BIR_MODEL is None:
-        print(f'Loading BiRefNet on {BIR_DEVICE}...')
-
-        _BIR_MODEL = AutoModelForImageSegmentation.from_pretrained(
-            "ZhengPeng7/BiRefNet",
-            trust_remote_code=True
-        )
-
-        _BIR_MODEL = _BIR_MODEL.to(BIR_DEVICE)
-        _BIR_MODEL = _BIR_MODEL.float()
-        _BIR_MODEL.eval()
-
-        print('BiRefNet dtype:', next(_BIR_MODEL.parameters()).dtype)
-
-    return _BIR_MODEL
-
-
-def remove_bg_birefnet(data):
-    image = Image.open(io.BytesIO(data)).convert("RGB")
-    original_size = image.size
-
-    model = get_birefnet_model()
-
-    input_tensor = _BIR_TRANSFORM(image).unsqueeze(0)
-    input_tensor = input_tensor.to(device=BIR_DEVICE, dtype=torch.float32)
-
-    with torch.no_grad():
-        pred = model(input_tensor)[-1].sigmoid().detach().cpu()[0].squeeze()
-
-    pred = pred.float()
-
-    mask = transforms.ToPILImage()(pred)
-    mask = mask.resize(original_size, Image.LANCZOS)
-
-    out = image.convert("RGBA")
-    out.putalpha(mask)
-
-    return out
+    print('    [photo] "%s": no usable image after trying %d'
+          % (player_name, len(images)))
+    return None
 
 def pick_player_with_photo(drive, match_players, recent_names, exclude=None, photo_base='front'):
+    """match_players: ordered list of this match's players (starters+subs).
+    recent_names: Picture values from previous rows, least-recently-used first.
+    exclude: names that must NOT be picked (e.g. the lineup's chosen player).
+    Returns (player_name, photo_img) or (None, None)."""
     exclude_norm = set(_norm(n) for n in (exclude or []) if n)
     recent_norm = [_norm(n) for n in recent_names if n]
 
-    preferred = [
-        p for p in match_players
-        if _norm(p) not in recent_norm and _norm(p) not in exclude_norm
-    ]
+    preferred = [p for p in match_players
+                 if _norm(p) not in recent_norm and _norm(p) not in exclude_norm]
     random.shuffle(preferred)
-
     for p in preferred:
         photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
 
-    fallback = [
-        p for p in match_players
-        if _norm(p) not in exclude_norm
-    ]
-    random.shuffle(fallback)
+    for rn in recent_names:
+        for p in match_players:
+            if _norm(p) == _norm(rn) and _norm(p) not in exclude_norm:
+                photo = get_random_player_photo(drive, p, photo_base)
+                if photo is not None:
+                    return p, photo
 
-    for p in fallback:
+    # Last resort: ignore recency/exclude rather than posting no photo at all
+    fallback_pool = [p for p in match_players if _norm(p) not in recent_norm]
+    random.shuffle(fallback_pool)
+    for p in fallback_pool:
         photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
 
     return None, None
 
-def crop_to_content(img, alpha_threshold=10):
-    img = img.convert('RGBA')
-    alpha = img.getchannel('A')
-    mask = alpha.point(lambda p: 255 if p > alpha_threshold else 0)
-    bbox = mask.getbbox()
+def crop_to_content(img):
+    """Crop transparent margins around the subject."""
+    bbox = img.getbbox()
     return img.crop(bbox) if bbox else img
 
 def add_white_glow(img, radius=25, layers=3, expand=140):
@@ -719,51 +736,6 @@ def add_white_glow(img, radius=25, layers=3, expand=140):
 GRAPH = 'https://graph.facebook.com/v20.0'
 STORY_W = 1080
 STORY_H = 1920
-
-def get_random_player_photo(drive, player_name, photo_base='front'):
-    folder_id = find_player_folder_id(drive, player_name)
-    if not folder_id:
-        print('  [photo] no folder: %s' % player_name)
-        return None
-
-    imgs = list_images_in_folder(drive, folder_id)
-    if not imgs:
-        print('  [photo] no images: %s' % player_name)
-        return None
-
-    wanted = (photo_base or '').strip().lower()
-
-    preferred = []
-    if wanted:
-        preferred = [
-            f for f in imgs
-            if os.path.splitext(f['name'])[0].strip().lower() == wanted
-        ]
-
-    candidates = preferred if preferred else imgs
-    random.shuffle(candidates)
-
-    for f in candidates:
-        try:
-            data = download_file_bytes(drive, f['id'])
-
-            img = remove_bg_birefnet(data)
-            img = crop_to_content(img)
-
-            if img is None or img.width <= 1 or img.height <= 1:
-                print('  [photo] empty cutout %s: %s' % (player_name, f.get('name', '')))
-                continue
-
-            img, content_bbox = add_white_glow(img)
-            img.info['content_bbox'] = content_bbox
-
-            print('  [photo] %s: %s' % (player_name, f['name']))
-            return img
-
-        except Exception as e:
-            print('  [photo] skip %s: %s' % (player_name, e))
-
-    return None
 
 def upload_public_image(drive, image_path, folder_id):
     last_err = None
@@ -877,43 +849,6 @@ def post_story_to_meta(story_url):
 # ============================================================
 # GENERIC HELPERS
 # ============================================================
-def paste_player_photo_original(bg, player_photo, box_x, box_w, box_top, box_bottom):
-    if player_photo is None:
-        return
-
-    ph = player_photo.copy()
-
-    cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
-    cl, ct, cr, cbot = cb
-    content_h = cbot - ct
-
-    if content_h <= 0:
-        return
-
-    target_content_h = box_bottom - box_top
-    scale = target_content_h / content_h
-
-    ph = ph.resize(
-        (
-            max(1, int(round(ph.width * scale))),
-            max(1, int(round(ph.height * scale)))
-        ),
-        Image.LANCZOS
-    )
-
-    sct = int(round(ct * scale))
-    scbot = int(round(cbot * scale))
-    scl = int(round(cl * scale))
-    scr = int(round(cr * scale))
-
-    content_cx = (scl + scr) / 2
-    box_cx = box_x + (box_w / 2)
-
-    px = int(round(box_cx - content_cx))
-    py = int(round(box_bottom - scbot))
-
-    bg.alpha_composite(ph, (px, py))
-
 def clean_team_name(name):
     s = (name or '').strip()
     return re.sub(r'\s*,?\s*(z\.s\.|a\.s\.)\s*$', '', s, flags=re.I).strip()
@@ -1222,15 +1157,40 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
         draw.text((CANVAS_W - LOGO_RIGHT_MARGIN - lw, LOGO_TOP_MARGIN),
                   label_text, font=label_font, fill=WHITE)
 
-    # --- Player photo ---
-    paste_player_photo_original(
-        bg,
-        player_photo,
-        PLAYER_BOX_X,
-        PLAYER_BOX_W,
-        PLAYER_BOX_TOP,
-        PLAYER_BOX_BOTTOM
-    )
+    # --- Player photo (right side) ---
+    if player_photo is not None:
+        ph = player_photo.copy()
+
+        # Player's real bounds inside the (glow-padded) image
+        cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
+        cl, ct, cr, cbot = cb
+        content_h = cbot - ct                    # player height (no glow)
+
+        bottom = CANVAS_H                                        # lowest player pixel here
+        top = PLAYER_BOX_TOP - int(0.10 * CANVAS_H)              # highest player pixel here
+        target_content_h = bottom - top
+
+        # Uniform scale so the PLAYER (not the glow) spans top..bottom; keep ratio
+        scale = target_content_h / content_h
+        new_w = max(1, int(round(ph.width * scale)))
+        new_h = max(1, int(round(ph.height * scale)))
+        ph = ph.resize((new_w, new_h), Image.LANCZOS)
+
+        # Scaled player-content bounds within the resized image
+        sct = int(round(ct * scale))
+        scbot = int(round(cbot * scale))
+        scl = int(round(cl * scale))
+        scr = int(round(cr * scale))
+        content_cx = (scl + scr) / 2             # horizontal center of the player
+
+        # Place so player top -> `top`, player bottom -> `bottom`
+        py = top - sct
+        # Center the PLAYER horizontally in the right block (divider..right edge),
+        # ignoring glow padding. Overflow off the right edge is allowed.
+        block_center_x = (CENTER_X + CANVAS_W) / 2
+        px = int(round(block_center_x - content_cx))
+
+        bg.alpha_composite(ph, (px, py))
 
     # --- Opposition block: VS / logo / name (right side, below player) ---
     if opp_name is not None:
@@ -1364,15 +1324,24 @@ def build_matchday_image(home_team, away_team, match_type, league,
             bg.alpha_composite(ll_img, (int(MD_LEAGUE_CX - ll_img.width / 2),
                                        int(MD_LEAGUE_CY - ll_img.height / 2)))
 
-    # ---- Player photo ----
-    paste_player_photo_original(
-        bg,
-        player_photo,
-        MD_PHOTO_BOX_LEFT,
-        MD_PHOTO_BOX_RIGHT - MD_PHOTO_BOX_LEFT,
-        MD_PHOTO_BOX_TOP,
-        MD_PHOTO_BOX_BOTTOM
-    )
+    # ---- Player photo in the white box ----
+    if player_photo is not None:
+        ph = player_photo.copy()
+        cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
+        cl, ct, cr, cbot = cb
+        content_h = cbot - ct
+        target_h = MD_PHOTO_BOX_BOTTOM - MD_PHOTO_BOX_TOP
+        scale = target_h / content_h
+        ph = ph.resize((max(1, int(round(ph.width * scale))),
+                       max(1, int(round(ph.height * scale)))), Image.LANCZOS)
+        sct = int(round(ct * scale))
+        scl = int(round(cl * scale))
+        scr = int(round(cr * scale))
+        content_cx = (scl + scr) / 2
+        py = MD_PHOTO_BOX_TOP - sct
+        box_cx = (MD_PHOTO_BOX_LEFT + MD_PHOTO_BOX_RIGHT) / 2
+        px = int(round(box_cx - content_cx))
+        bg.alpha_composite(ph, (px, py))
 
     # ---- Date / Location / Kickoff text ----
     info_font = load_font(font_path, MD_INFO_SIZE)
@@ -1641,8 +1610,7 @@ def run_lineup_generator():
             chosen_name, player_photo = pick_player_with_photo(
                 drive, match_players, recent_lru_first, photo_base='right')
             if chosen_name is None:
-                errors.append('%s row %d: no player photo available.' % (team, i))
-                continue
+                print('%s row %d: no player photo available.' % (team, i))
 
             opp_name, match_type, kickoff_txt, location_txt, we_are_home = find_opponent(client, team, match_date)
             if opp_name is None:
@@ -1734,8 +1702,7 @@ def run_lineup_generator():
                 md_chosen_name, md_player_photo = pick_player_with_photo(
                     drive, match_players, recent_md_lru_first, exclude=md_exclude)
                 if md_chosen_name is None:
-                    errors.append('%s row %d: no MD player photo available.' % (team, i))
-                    continue
+                    print('%s row %d: no MD player photo available.' % (team, i))
 
                 try:
                     md_img = build_matchday_image(
