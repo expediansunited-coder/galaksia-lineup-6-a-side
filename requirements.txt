@@ -13,3 +13,4 @@ einops
 kornia
 opencv-python-headless
 numpy
+timm
