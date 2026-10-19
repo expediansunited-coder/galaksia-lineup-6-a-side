@@ -660,32 +660,27 @@ def remove_bg_birefnet(data):
     return out
 
 def pick_player_with_photo(drive, match_players, recent_names, exclude=None, photo_base='front'):
-    """match_players: ordered list of this match's players (starters+subs).
-    recent_names: Picture values from previous rows, least-recently-used first.
-    exclude: names that must NOT be picked (e.g. the lineup's chosen player).
-    Returns (player_name, photo_img) or (None, None)."""
     exclude_norm = set(_norm(n) for n in (exclude or []) if n)
     recent_norm = [_norm(n) for n in recent_names if n]
 
-    preferred = [p for p in match_players
-                 if _norm(p) not in recent_norm and _norm(p) not in exclude_norm]
+    preferred = [
+        p for p in match_players
+        if _norm(p) not in recent_norm and _norm(p) not in exclude_norm
+    ]
     random.shuffle(preferred)
+
     for p in preferred:
         photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
 
-    for rn in recent_names:
-        for p in match_players:
-            if _norm(p) == _norm(rn) and _norm(p) not in exclude_norm:
-                photo = get_random_player_photo(drive, p, photo_base)
-                if photo is not None:
-                    return p, photo
+    fallback = [
+        p for p in match_players
+        if _norm(p) not in exclude_norm
+    ]
+    random.shuffle(fallback)
 
-    # Last resort: ignore recency/exclude rather than posting no photo at all
-    fallback_pool = [p for p in match_players if _norm(p) not in recent_norm]
-    random.shuffle(fallback_pool)
-    for p in fallback_pool:
+    for p in fallback:
         photo = get_random_player_photo(drive, p, photo_base)
         if photo is not None:
             return p, photo
@@ -726,53 +721,46 @@ STORY_H = 1920
 def get_random_player_photo(drive, player_name, photo_base='front'):
     folder_id = find_player_folder_id(drive, player_name)
     if not folder_id:
-        print('  [photo] no folder found for "%s"' % player_name)
+        print('  [photo] no folder: %s' % player_name)
         return None
 
-    files = list_images_in_folder(drive, folder_id)
-    if not files:
-        print('  [photo] no images found for "%s"' % player_name)
+    imgs = list_images_in_folder(drive, folder_id)
+    if not imgs:
+        print('  [photo] no images: %s' % player_name)
         return None
 
-    wanted = _norm(photo_base)
+    wanted = (photo_base or '').strip().lower()
+
     preferred = []
-
     if wanted:
-        for f in files:
-            stem = os.path.splitext(f['name'])[0]
-            toks = [_norm(t) for t in _tokens(stem)]
-            if wanted in toks or _norm(stem).endswith(wanted):
-                preferred.append(f)
+        preferred = [
+            f for f in imgs
+            if os.path.splitext(f['name'])[0].strip().lower() == wanted
+        ]
 
-    candidates = preferred if preferred else files
+    candidates = preferred if preferred else imgs
     random.shuffle(candidates)
 
     for f in candidates:
         try:
             data = download_file_bytes(drive, f['id'])
 
-            # Validate that the selected file is a real image first.
-            Image.open(io.BytesIO(data)).verify()
-
-            # Then remove background with BiRefNet.
             img = remove_bg_birefnet(data)
             img = crop_to_content(img)
 
             if img is None or img.width <= 1 or img.height <= 1:
-                print('  [photo] empty cutout "%s" for "%s"' % (f.get('name', ''), player_name))
+                print('  [photo] empty cutout %s: %s' % (player_name, f.get('name', '')))
                 continue
 
             img, content_bbox = add_white_glow(img)
             img.info['content_bbox'] = content_bbox
 
-            print('  [photo] "%s" -> %s' % (player_name, f['name']))
+            print('  [photo] %s: %s' % (player_name, f['name']))
             return img
 
         except Exception as e:
-            print('  [photo] failed "%s" for "%s": %s' % (f.get('name', ''), player_name, e))
-            continue
+            print('  [photo] skip %s: %s' % (player_name, e))
 
-    print('  [photo] no usable photo after background removal for "%s"' % player_name)
     return None
 
 def upload_public_image(drive, image_path, folder_id):
