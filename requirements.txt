@@ -7,3 +7,5 @@ Pillow
 pillow-heif
 requests
 rembg[cpu]
+opencv-python-headless
+numpy
