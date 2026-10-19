@@ -687,9 +687,11 @@ def pick_player_with_photo(drive, match_players, recent_names, exclude=None, pho
 
     return None, None
 
-def crop_to_content(img):
-    """Crop transparent margins around the subject."""
-    bbox = img.getbbox()
+def crop_to_content(img, alpha_threshold=10):
+    img = img.convert('RGBA')
+    alpha = img.getchannel('A')
+    mask = alpha.point(lambda p: 255 if p > alpha_threshold else 0)
+    bbox = mask.getbbox()
     return img.crop(bbox) if bbox else img
 
 def add_white_glow(img, radius=25, layers=3, expand=140):
@@ -1187,34 +1189,29 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
     if player_photo is not None:
         ph = player_photo.copy()
 
-        # Player's real bounds inside the (glow-padded) image
         cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
         cl, ct, cr, cbot = cb
-        content_h = cbot - ct                    # player height (no glow)
+        content_h = cbot - ct
 
-        bottom = CANVAS_H                                        # lowest player pixel here
-        top = PLAYER_BOX_TOP - int(0.10 * CANVAS_H)              # highest player pixel here
-        target_content_h = bottom - top
-
-        # Uniform scale so the PLAYER (not the glow) spans top..bottom; keep ratio
+        target_content_h = PLAYER_BOX_BOTTOM - PLAYER_BOX_TOP
         scale = target_content_h / content_h
-        new_w = max(1, int(round(ph.width * scale)))
-        new_h = max(1, int(round(ph.height * scale)))
-        ph = ph.resize((new_w, new_h), Image.LANCZOS)
 
-        # Scaled player-content bounds within the resized image
+        ph = ph.resize(
+            (max(1, int(round(ph.width * scale))),
+             max(1, int(round(ph.height * scale)))),
+            Image.LANCZOS
+        )
+
         sct = int(round(ct * scale))
         scbot = int(round(cbot * scale))
         scl = int(round(cl * scale))
         scr = int(round(cr * scale))
-        content_cx = (scl + scr) / 2             # horizontal center of the player
 
-        # Place so player top -> `top`, player bottom -> `bottom`
-        py = top - sct
-        # Center the PLAYER horizontally in the right block (divider..right edge),
-        # ignoring glow padding. Overflow off the right edge is allowed.
-        block_center_x = (CENTER_X + CANVAS_W) / 2
-        px = int(round(block_center_x - content_cx))
+        content_cx = (scl + scr) / 2
+        box_cx = PLAYER_BOX_X + (PLAYER_BOX_W / 2)
+
+        px = int(round(box_cx - content_cx))
+        py = int(round(PLAYER_BOX_BOTTOM - scbot))
 
         bg.alpha_composite(ph, (px, py))
 
