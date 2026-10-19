@@ -17,7 +17,9 @@ import random
 import json
 import time
 import requests
-from rembg import remove
+import torch
+from torchvision import transforms
+from transformers import AutoModelForImageSegmentation
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -599,51 +601,63 @@ def find_player_folder_id(drive, player_name):
             return f['id']
     return None
 
-def get_random_player_photo(drive, player_name, photo_base='front'):
-    """Return a random photo (PIL RGBA, bg removed, cropped) for a player,
-    or None if no folder / no usable images."""
-    folder_id = find_player_folder_id(drive, player_name)
-    if not folder_id:
-        print('    [photo] "%s": NO FOLDER matched' % player_name)
-        return None
-    images = list_images_in_folder(drive, folder_id)
-    if not images:
-        print('    [photo] "%s": folder found but NO IMAGES' % player_name)
-        return None
+# ============================================================
+# BIREFNET BACKGROUND REMOVAL FOR PLAYER PHOTOS
+# ============================================================
+BIR_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+_BIR_MODEL = None
 
-    # Only use the file named `photo_base` (any extension).
-    images = [im for im in images
-              if os.path.splitext(im['name'])[0].strip().lower() == photo_base]
-    if not images:
-        print('    [photo] "%s": no "%s" image in folder' % (player_name, photo_base))
-        return None
+_BIR_TRANSFORM = transforms.Compose([
+    transforms.Resize((1024, 1024)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        [0.485, 0.456, 0.406],
+        [0.229, 0.224, 0.225]
+    )
+])
 
-    # Try images in random order; skip any that can't be opened/processed.
-    candidates = images[:]
-    random.shuffle(candidates)
-    for choice in candidates:
-        try:
-            data = download_file_bytes(drive, choice['id'])
-            # Verify it's a real raster image before bg-removal
-            Image.open(io.BytesIO(data)).verify()
-            cut = remove(data)  # bytes in -> PNG bytes out (bg removed)
-            img = Image.open(io.BytesIO(cut)).convert('RGBA')
-            img = crop_to_content(img)
-            # Keep only the top 5/8 of the height (chop bottom 3/8)
-            w, h = img.size
-            img = img.crop((0, 0, w, int(h * 5 / 8)))
-            img, content_bbox = add_white_glow(img, radius=8, layers=1, expand=1)
-            img.info['content_bbox'] = content_bbox
-            print('    [photo] "%s": used %s' % (player_name, choice['name']))
-            return img
-        except Exception as e:
-            print('    [photo] "%s": skip %s (%s)'
-                  % (player_name, choice.get('name', '?'), e))
-            continue
 
-    print('    [photo] "%s": no usable image after trying %d'
-          % (player_name, len(images)))
-    return None
+def get_birefnet_model():
+    global _BIR_MODEL
+
+    if _BIR_MODEL is None:
+        print(f'Loading BiRefNet on {BIR_DEVICE}...')
+
+        _BIR_MODEL = AutoModelForImageSegmentation.from_pretrained(
+            "ZhengPeng7/BiRefNet",
+            trust_remote_code=True
+        )
+
+        _BIR_MODEL = _BIR_MODEL.to(BIR_DEVICE)
+        _BIR_MODEL = _BIR_MODEL.float()
+        _BIR_MODEL.eval()
+
+        print('BiRefNet dtype:', next(_BIR_MODEL.parameters()).dtype)
+
+    return _BIR_MODEL
+
+
+def remove_bg_birefnet(data):
+    image = Image.open(io.BytesIO(data)).convert("RGB")
+    original_size = image.size
+
+    model = get_birefnet_model()
+
+    input_tensor = _BIR_TRANSFORM(image).unsqueeze(0)
+    input_tensor = input_tensor.to(device=BIR_DEVICE, dtype=torch.float32)
+
+    with torch.no_grad():
+        pred = model(input_tensor)[-1].sigmoid().detach().cpu()[0].squeeze()
+
+    pred = pred.float()
+
+    mask = transforms.ToPILImage()(pred)
+    mask = mask.resize(original_size, Image.LANCZOS)
+
+    out = image.convert("RGBA")
+    out.putalpha(mask)
+
+    return out
 
 def pick_player_with_photo(drive, match_players, recent_names, exclude=None, photo_base='front'):
     """match_players: ordered list of this match's players (starters+subs).
@@ -708,6 +722,51 @@ def add_white_glow(img, radius=25, layers=3, expand=140):
 GRAPH = 'https://graph.facebook.com/v20.0'
 STORY_W = 1080
 STORY_H = 1920
+
+def get_random_player_photo(drive, player_name, photo_base='front'):
+    folder_id = find_player_folder_id(drive, player_name)
+    if not folder_id:
+        print('  [photo] no folder found for "%s"' % player_name)
+        return None
+
+    files = list_images_in_folder(drive, folder_id)
+    if not files:
+        print('  [photo] no images found for "%s"' % player_name)
+        return None
+
+    wanted = _norm(photo_base)
+    preferred = []
+
+    if wanted:
+        for f in files:
+            stem = os.path.splitext(f['name'])[0]
+            toks = [_norm(t) for t in _tokens(stem)]
+            if wanted in toks or _norm(stem).endswith(wanted):
+                preferred.append(f)
+
+    candidates = preferred if preferred else files
+    random.shuffle(candidates)
+
+    for f in candidates:
+        try:
+            data = download_file_bytes(drive, f['id'])
+
+            img = remove_bg_birefnet(data)
+            img = crop_to_content(img)
+
+            if img is None or img.width <= 1 or img.height <= 1:
+                continue
+
+            img, content_bbox = add_white_glow(img)
+            img.info['content_bbox'] = content_bbox
+
+            print('  [photo] "%s" -> %s' % (player_name, f['name']))
+            return img
+
+        except Exception as e:
+            print('  [photo] failed "%s" for "%s": %s' % (f.get('name', ''), player_name, e))
+
+    return None
 
 def upload_public_image(drive, image_path, folder_id):
     last_err = None
