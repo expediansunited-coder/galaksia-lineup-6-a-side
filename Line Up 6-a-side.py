@@ -103,7 +103,7 @@ META_CONFIG_FILE = 'meta_config_6aside.json'
 POST_UPLOAD_FOLDER_ID = '1-MAJwpIAjQvzXQdsPdqmkX4NGrM8YFt5'
 
 # --- Player photos root folder (each player has a subfolder) ---
-PLAYERS_ROOT_FOLDER_ID = '1ul10SG2lD5vOjwR0hpQPPb6FqLWFcc3N'
+PLAYERS_ROOT_FOLDER_ID = '1xyUCnKlA_AQUU2g99y8D4jb2Yr4MOd1s'
 
 # --- Player photo placement (right half) ---
 PLAYER_BOX_X = 1400          # left of player area (just right of divider)
