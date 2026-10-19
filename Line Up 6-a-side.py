@@ -877,6 +877,43 @@ def post_story_to_meta(story_url):
 # ============================================================
 # GENERIC HELPERS
 # ============================================================
+def paste_player_photo_original(bg, player_photo, box_x, box_w, box_top, box_bottom):
+    if player_photo is None:
+        return
+
+    ph = player_photo.copy()
+
+    cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
+    cl, ct, cr, cbot = cb
+    content_h = cbot - ct
+
+    if content_h <= 0:
+        return
+
+    target_content_h = box_bottom - box_top
+    scale = target_content_h / content_h
+
+    ph = ph.resize(
+        (
+            max(1, int(round(ph.width * scale))),
+            max(1, int(round(ph.height * scale)))
+        ),
+        Image.LANCZOS
+    )
+
+    sct = int(round(ct * scale))
+    scbot = int(round(cbot * scale))
+    scl = int(round(cl * scale))
+    scr = int(round(cr * scale))
+
+    content_cx = (scl + scr) / 2
+    box_cx = box_x + (box_w / 2)
+
+    px = int(round(box_cx - content_cx))
+    py = int(round(box_bottom - scbot))
+
+    bg.alpha_composite(ph, (px, py))
+
 def clean_team_name(name):
     s = (name or '').strip()
     return re.sub(r'\s*,?\s*(z\.s\.|a\.s\.)\s*$', '', s, flags=re.I).strip()
@@ -1185,35 +1222,15 @@ def build_lineup_image(team, starters, subs, captain, logo_img, bg_src, font_pat
         draw.text((CANVAS_W - LOGO_RIGHT_MARGIN - lw, LOGO_TOP_MARGIN),
                   label_text, font=label_font, fill=WHITE)
 
-    # --- Player photo (right side) ---
-    if player_photo is not None:
-        ph = player_photo.copy()
-
-        cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
-        cl, ct, cr, cbot = cb
-        content_h = cbot - ct
-
-        target_content_h = PLAYER_BOX_BOTTOM - PLAYER_BOX_TOP
-        scale = target_content_h / content_h
-
-        ph = ph.resize(
-            (max(1, int(round(ph.width * scale))),
-             max(1, int(round(ph.height * scale)))),
-            Image.LANCZOS
-        )
-
-        sct = int(round(ct * scale))
-        scbot = int(round(cbot * scale))
-        scl = int(round(cl * scale))
-        scr = int(round(cr * scale))
-
-        content_cx = (scl + scr) / 2
-        box_cx = PLAYER_BOX_X + (PLAYER_BOX_W / 2)
-
-        px = int(round(box_cx - content_cx))
-        py = int(round(PLAYER_BOX_BOTTOM - scbot))
-
-        bg.alpha_composite(ph, (px, py))
+    # --- Player photo ---
+    paste_player_photo_original(
+        bg,
+        player_photo,
+        PLAYER_BOX_X,
+        PLAYER_BOX_W,
+        PLAYER_BOX_TOP,
+        PLAYER_BOX_BOTTOM
+    )
 
     # --- Opposition block: VS / logo / name (right side, below player) ---
     if opp_name is not None:
@@ -1347,24 +1364,15 @@ def build_matchday_image(home_team, away_team, match_type, league,
             bg.alpha_composite(ll_img, (int(MD_LEAGUE_CX - ll_img.width / 2),
                                        int(MD_LEAGUE_CY - ll_img.height / 2)))
 
-    # ---- Player photo in the white box ----
-    if player_photo is not None:
-        ph = player_photo.copy()
-        cb = ph.info.get('content_bbox', (0, 0, ph.width, ph.height))
-        cl, ct, cr, cbot = cb
-        content_h = cbot - ct
-        target_h = MD_PHOTO_BOX_BOTTOM - MD_PHOTO_BOX_TOP
-        scale = target_h / content_h
-        ph = ph.resize((max(1, int(round(ph.width * scale))),
-                       max(1, int(round(ph.height * scale)))), Image.LANCZOS)
-        sct = int(round(ct * scale))
-        scl = int(round(cl * scale))
-        scr = int(round(cr * scale))
-        content_cx = (scl + scr) / 2
-        py = MD_PHOTO_BOX_TOP - sct
-        box_cx = (MD_PHOTO_BOX_LEFT + MD_PHOTO_BOX_RIGHT) / 2
-        px = int(round(box_cx - content_cx))
-        bg.alpha_composite(ph, (px, py))
+    # ---- Player photo ----
+    paste_player_photo_original(
+        bg,
+        player_photo,
+        MD_PHOTO_BOX_LEFT,
+        MD_PHOTO_BOX_RIGHT - MD_PHOTO_BOX_LEFT,
+        MD_PHOTO_BOX_TOP,
+        MD_PHOTO_BOX_BOTTOM
+    )
 
     # ---- Date / Location / Kickoff text ----
     info_font = load_font(font_path, MD_INFO_SIZE)
