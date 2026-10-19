@@ -411,119 +411,91 @@ def find_logo_file(logo_files, sheet_name):
             return f
     return None
 
-def remove_edge_background(img, tol=77):
-    """
-    Removes only background pixels connected to the image edges.
-    Internal logo colours are preserved, even if they match the background colour.
-    """
+def remove_edge_background(img, tol=22):
+    import cv2
+    import numpy as np
+
     img = img.convert('RGBA')
-    w, h = img.size
-    px = img.load()
+    rgba = np.array(img, dtype=np.uint8)
 
-    edge_pixels = []
+    h, w = rgba.shape[:2]
+    rgb = rgba[:, :, :3]
+    alpha = rgba[:, :, 3]
 
-    for x in range(w):
-        edge_pixels.append(px[x, 0])
-        edge_pixels.append(px[x, h - 1])
+    edge_mask = np.zeros((h, w), dtype=bool)
+    edge_mask[0, :] = True
+    edge_mask[h - 1, :] = True
+    edge_mask[:, 0] = True
+    edge_mask[:, w - 1] = True
 
-    for y in range(h):
-        edge_pixels.append(px[0, y])
-        edge_pixels.append(px[w - 1, y])
-
-    edge_pixels = [c for c in edge_pixels if c[3] > 10]
-
-    if not edge_pixels:
+    valid_edge = edge_mask & (alpha > 10)
+    if not np.any(valid_edge):
         return img
 
-    from collections import Counter, deque
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    samples = lab[valid_edge].reshape(-1, 3).astype(np.float32)
 
-    def quantize(c):
-        return (
-            int(round(c[0] / 16) * 16),
-            int(round(c[1] / 16) * 16),
-            int(round(c[2] / 16) * 16)
+    if len(samples) < 10:
+        centers = np.array([np.median(samples, axis=0)], dtype=np.float32)
+    else:
+        k = min(4, len(samples))
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.5
+        )
+        _, labels, centers = cv2.kmeans(
+            samples,
+            k,
+            None,
+            criteria,
+            3,
+            cv2.KMEANS_PP_CENTERS
         )
 
-    counts = Counter(quantize(c) for c in edge_pixels)
+        counts = np.bincount(labels.flatten(), minlength=k)
+        min_count = max(5, int(len(samples) * 0.03))
+        keep = counts >= min_count
 
-    min_count = max(3, int(len(edge_pixels) * 0.03))
-    bg_colours = [rgb for rgb, count in counts.most_common(6) if count >= min_count]
+        if np.any(keep):
+            centers = centers[keep]
+        else:
+            centers = centers[[int(np.argmax(counts))]]
 
-    if not bg_colours:
-        bg_colours = [counts.most_common(1)[0][0]]
+    dist_stack = []
+    for c in centers:
+        d = np.sqrt(np.sum((lab - c) ** 2, axis=2))
+        dist_stack.append(d)
 
-    def is_background_like(c):
-        if c[3] <= 10:
-            return True
+    dist = np.min(np.stack(dist_stack, axis=0), axis=0)
 
-        for bg in bg_colours:
-            dist = abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2])
-            if dist <= tol:
-                return True
+    bg_like = (dist <= tol) | (alpha <= 10)
 
-        return False
-
-    mask = bytearray(w * h)
-
-    for y in range(h):
-        for x in range(w):
-            idx = y * w + x
-            c = px[x, y]
-            mask[idx] = 0 if is_background_like(c) else 1
-
-    dq = deque()
-    visited = bytearray(w * h)
+    flood = (bg_like.astype(np.uint8) * 255)
+    ff_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
 
     for x in range(w):
-        for y in (0, h - 1):
-            idx = y * w + x
-            if mask[idx] == 0 and not visited[idx]:
-                visited[idx] = 1
-                dq.append((x, y))
+        if flood[0, x] == 255:
+            cv2.floodFill(flood, ff_mask, (x, 0), 128)
+        if flood[h - 1, x] == 255:
+            cv2.floodFill(flood, ff_mask, (x, h - 1), 128)
 
     for y in range(h):
-        for x in (0, w - 1):
-            idx = y * w + x
-            if mask[idx] == 0 and not visited[idx]:
-                visited[idx] = 1
-                dq.append((x, y))
+        if flood[y, 0] == 255:
+            cv2.floodFill(flood, ff_mask, (0, y), 128)
+        if flood[y, w - 1] == 255:
+            cv2.floodFill(flood, ff_mask, (w - 1, y), 128)
 
-    outside = bytearray(w * h)
+    outside = flood == 128
 
-    while dq:
-        x, y = dq.popleft()
-        idx = y * w + x
-        outside[idx] = 1
+    new_alpha = alpha.copy()
+    new_alpha[outside] = 0
 
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nx, ny = x + dx, y + dy
+    rgba[:, :, 3] = new_alpha
 
-            if 0 <= nx < w and 0 <= ny < h:
-                nidx = ny * w + nx
-
-                if not visited[nidx] and mask[nidx] == 0:
-                    visited[nidx] = 1
-                    dq.append((nx, ny))
-
-    new_alpha = bytearray(w * h)
-
-    for y in range(h):
-        for x in range(w):
-            idx = y * w + x
-            c = px[x, y]
-
-            if c[3] <= 10:
-                new_alpha[idx] = 0
-            elif outside[idx]:
-                new_alpha[idx] = 0
-            else:
-                new_alpha[idx] = c[3]
-
-    alpha_img = Image.frombytes('L', (w, h), bytes(new_alpha))
-    img.putalpha(alpha_img)
-
-    cb = img.getbbox()
-    return img.crop(cb) if cb else img
+    out = Image.fromarray(rgba, 'RGBA')
+    cb = out.getbbox()
+    return out.crop(cb) if cb else out
 
 def fit_font_width(font_path, text, max_w, start_size, min_size=20):
     tmp = ImageDraw.Draw(Image.new('RGBA', (10, 10)))
