@@ -6,6 +6,10 @@ google-auth-oauthlib
 Pillow
 pillow-heif
 requests
-rembg[cpu]
+torch
+torchvision
+transformers
+einops
+kornia
 opencv-python-headless
 numpy
