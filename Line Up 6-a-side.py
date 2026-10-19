@@ -103,7 +103,7 @@ META_CONFIG_FILE = 'meta_config_6aside.json'
 POST_UPLOAD_FOLDER_ID = '1-MAJwpIAjQvzXQdsPdqmkX4NGrM8YFt5'
 
 # --- Player photos root folder (each player has a subfolder) ---
-PLAYERS_ROOT_FOLDER_ID = '1xyUCnKlA_AQUU2g99y8D4jb2Yr4MOd1s'
+PLAYERS_ROOT_FOLDER_ID = '1ul10SG2lD5vOjwR0hpQPPb6FqLWFcc3N'
 
 # --- Player photo placement (right half) ---
 PLAYER_BOX_X = 1400          # left of player area (just right of divider)
@@ -751,10 +751,15 @@ def get_random_player_photo(drive, player_name, photo_base='front'):
         try:
             data = download_file_bytes(drive, f['id'])
 
+            # Validate that the selected file is a real image first.
+            Image.open(io.BytesIO(data)).verify()
+
+            # Then remove background with BiRefNet.
             img = remove_bg_birefnet(data)
             img = crop_to_content(img)
 
             if img is None or img.width <= 1 or img.height <= 1:
+                print('  [photo] empty cutout "%s" for "%s"' % (f.get('name', ''), player_name))
                 continue
 
             img, content_bbox = add_white_glow(img)
@@ -765,7 +770,9 @@ def get_random_player_photo(drive, player_name, photo_base='front'):
 
         except Exception as e:
             print('  [photo] failed "%s" for "%s": %s' % (f.get('name', ''), player_name, e))
+            continue
 
+    print('  [photo] no usable photo after background removal for "%s"' % player_name)
     return None
 
 def upload_public_image(drive, image_path, folder_id):
