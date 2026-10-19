@@ -1636,7 +1636,8 @@ def run_lineup_generator():
             chosen_name, player_photo = pick_player_with_photo(
                 drive, match_players, recent_lru_first, photo_base='right')
             if chosen_name is None:
-                print('%s row %d: no player photo available.' % (team, i))
+                errors.append('%s row %d: no player photo available.' % (team, i))
+                continue
 
             opp_name, match_type, kickoff_txt, location_txt, we_are_home = find_opponent(client, team, match_date)
             if opp_name is None:
@@ -1728,7 +1729,8 @@ def run_lineup_generator():
                 md_chosen_name, md_player_photo = pick_player_with_photo(
                     drive, match_players, recent_md_lru_first, exclude=md_exclude)
                 if md_chosen_name is None:
-                    print('%s row %d: no MD player photo available.' % (team, i))
+                    errors.append('%s row %d: no MD player photo available.' % (team, i))
+                    continue
 
                 try:
                     md_img = build_matchday_image(
